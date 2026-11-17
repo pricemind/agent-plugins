@@ -47,13 +47,14 @@ Start from the user's wording, such as a brand, category, SKU or EAN, and turn i
 
 `search_query` returns a `visual` hint (chart kind, columns, colours, muted shops, notes) with its rows. Never write chart code yourself.
 
-1. **The host shows the Pricemind chart view.** Some clients display an interactive Pricemind chart directly under the `search_query` result. Then do not draw anything; refer to the chart in your answer.
+1. **The host shows the Pricemind chart view.** Clients with interactive views (the Claude apps) display the Pricemind chart directly under the `search_query` result. There, do not draw anything and do not repeat the rows as a table: write the summary and refer to the chart.
 2. **Otherwise use the template.** Copy [assets/chart.html](assets/chart.html) and fill only its data block:
 
    ```html
    <script type="application/json" id="pricemind-chart-data">
    {"title": "...", "subtitle": "...", "visual": <the visual hint, unchanged>,
-    "rows": <data.rows>, "columns": <data.columns>, "open_in_pricemind_url": "<link when the result has one>"}
+    "rows": <data.rows>, "columns": <data.columns>, "currency": "<data.currency when present>",
+    "open_in_pricemind_url": "<link when the result has one>"}
    </script>
    ```
 
@@ -62,7 +63,7 @@ Start from the user's wording, such as a brand, category, SKU or EAN, and turn i
 
 ## 5. Answer
 
-- Lead with the answer in one or two sentences, then the chart, then a compact table (at most about 15 rows), then caveats.
+- Lead with the answer in one or two sentences, then the chart, then caveats. Add a compact table (at most about 15 rows) only where no chart is shown.
 - Be honest about coverage: unmatched products, out-of-stock offers, stale observation dates and price basis. Large jumps (for example 90% down) may be pack-size or mismatched offers; flag them instead of reporting them as market moves.
 - Never show more than the user asked for, and never expose another account's data.
 
