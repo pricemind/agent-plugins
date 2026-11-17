@@ -1,0 +1,28 @@
+{
+  "name": "pricemind",
+  "displayName": "Pricemind",
+  "version": "1.0.0",
+  "description": "Competitive price intelligence in Claude: see where your prices sit against competitors, review product matches, research competitor alternatives and manage repricing strategies in Pricemind. Sign in with your Pricemind account.",
+  "author": {
+    "name": "Pricemind",
+    "url": "https://pricemind.ai"
+  },
+  "homepage": "https://pricemind.ai",
+  "repository": "https://github.com/pricemind/claude-plugin",
+  "license": "MIT",
+  "keywords": [
+    "pricing",
+    "price-intelligence",
+    "competitor-prices",
+    "repricing",
+    "ecommerce",
+    "retail",
+    "product-matching",
+    "mcp"
+  ],
+  "icon": "./logo.png",
+  "documentationUrl": "https://pricemind.ai/docs",
+  "supportUrl": "https://pricemind.ai/contact",
+  "privacyPolicyUrl": "https://pricemind.ai/privacy",
+  "termsOfServiceUrl": "https://pricemind.ai/terms"
+}

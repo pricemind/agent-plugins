@@ -1,0 +1,17 @@
+{
+  "name": "pricemind",
+  "owner": {
+    "name": "Pricemind",
+    "url": "https://pricemind.ai"
+  },
+  "metadata": {
+    "description": "The official Pricemind plugin for Claude."
+  },
+  "plugins": [
+    {
+      "name": "pricemind",
+      "source": "./",
+      "description": "Competitive price intelligence, product matching, competitor alternatives and repricing strategies from your Pricemind account."
+    }
+  ]
+}
