@@ -64,7 +64,7 @@ Or, inside a Claude Code session, run `/plugin marketplace add pricemind/claude-
 
 ## Sign in
 
-The first time Claude uses a Pricemind tool, it opens **Sign in with Pricemind** in your browser. You need:
+After installing, sign in once. In Claude Code, run `/mcp`, choose the Pricemind server and select **Authenticate**. In the Claude apps, connect Pricemind from the connector's settings. Either way, **Sign in with Pricemind** opens in your browser. You need:
 
 - a Pricemind account;
 - an account administrator role (connecting an app acts for the whole account).
