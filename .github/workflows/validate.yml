@@ -1,0 +1,43 @@
+name: Validate plugin
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code@2.1.319
+
+      - name: Claude plugin (strict)
+        run: claude plugin validate --strict .
+
+      - name: Agent Plugins schemas (plugin.json, mcp.json)
+        run: |
+          mkdir -p "$RUNNER_TEMP/schemas"
+          curl -fsSL -o "$RUNNER_TEMP/schemas/plugin.schema.json" https://agent-plugins.org/schemas/1.0.0/plugin.schema.json
+          curl -fsSL -o "$RUNNER_TEMP/schemas/mcp.schema.json" https://agent-plugins.org/schemas/1.0.0/mcp.schema.json
+          npx --yes ajv-cli@5.0.0 validate --spec=draft2020 --strict=false -s "$RUNNER_TEMP/schemas/plugin.schema.json" -d plugin.json
+          npx --yes ajv-cli@5.0.0 validate --spec=draft2020 --strict=false -s "$RUNNER_TEMP/schemas/mcp.schema.json" -d mcp.json
+
+      - name: Codex manifests, marketplaces and skill metadata
+        run: node scripts/check-manifests.mjs
+
+      - name: Tool-name drift check
+        # With the secret set, also checks against the live tools/list.
+        env:
+          PRICEMIND_MCP_TOKEN: ${{ secrets.PRICEMIND_MCP_TOKEN }}
+        run: node scripts/check-tool-names.mjs

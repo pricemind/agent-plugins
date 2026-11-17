@@ -1,0 +1,54 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "pricemind",
+  "version": "1.1.0",
+  "description": "Competitive price intelligence from your Pricemind account: see where your prices sit against competitors as Pricemind charts, run weekly reviews, management reports and promo watches, review product matches, research competitor alternatives and manage repricing strategies.",
+  "author": {
+    "name": "Pricemind",
+    "url": "https://pricemind.ai"
+  },
+  "homepage": "https://pricemind.ai",
+  "repository": "https://github.com/pricemind/agent-plugins",
+  "license": "MIT",
+  "keywords": [
+    "pricing",
+    "price-intelligence",
+    "competitor-prices",
+    "repricing",
+    "ecommerce",
+    "retail",
+    "product-matching",
+    "mcp"
+  ],
+  "extensions": {
+    "com.openai": {
+      "onboardingSkill": "./skills/setup/SKILL.md",
+      "interface": {
+        "displayName": "Pricemind",
+        "shortDescription": "Competitor prices and charts",
+        "longDescription": "Ask about your prices and competitors in plain language and get answers from live Pricemind data. Pricemind shows where each product sits against every competitor, who changed prices and when, and draws the result as a Pricemind chart. Packaged workflows run a weekly review, a management report, a promo watch, a single-product price check and an own-brand vs. market comparison in one step. You can also review and fix product matches, research comparable products from other brands and inspect or change repricing strategies. The assistant asks once per job before it removes anything or changes prices, then reports every change and how to undo it. Sign in with your Pricemind account; no API key is stored on your computer.",
+        "developerName": "Pricemind",
+        "category": "Productivity",
+        "capabilities": [
+          "Interactive",
+          "Read",
+          "Write"
+        ],
+        "websiteURL": "https://pricemind.ai",
+        "supportURL": "https://pricemind.ai/contact",
+        "privacyPolicyURL": "https://pricemind.ai/privacy",
+        "termsOfServiceURL": "https://pricemind.ai/terms",
+        "defaultPrompt": [
+          "How do my prices compare with my competitors this week?",
+          "Run my weekly pricing review and show the top products to act on.",
+          "Have competitors started cutting prices? Show who, how deep and since when."
+        ],
+        "brandColor": "#5B2D92",
+        "brandColorDark": "#9D7BE0",
+        "composerIcon": "./assets/logo.png",
+        "logo": "./assets/logo.png",
+        "screenshots": []
+      }
+    }
+  }
+}

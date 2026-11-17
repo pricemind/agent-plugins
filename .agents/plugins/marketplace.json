@@ -1,0 +1,20 @@
+{
+  "name": "pricemind",
+  "interface": {
+    "displayName": "Pricemind"
+  },
+  "plugins": [
+    {
+      "name": "pricemind",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

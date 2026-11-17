@@ -1,0 +1,14 @@
+interface:
+  display_name: "Matching review"
+  short_description: "Find and fix wrong or missing product matches"
+  brand_color: "#5B2D92"
+  default_prompt: "Use $matching-review to find and fix wrong competitor matches."
+policy:
+  allow_implicit_invocation: true
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "pricemind"
+      description: "Pricemind MCP server (sign in with your Pricemind account)"
+      transport: "streamable_http"
+      url: "https://mcp.pricemind.io/mcp"

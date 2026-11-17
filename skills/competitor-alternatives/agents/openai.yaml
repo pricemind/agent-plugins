@@ -1,0 +1,14 @@
+interface:
+  display_name: "Competitor alternatives"
+  short_description: "Research comparable products from other brands"
+  brand_color: "#5B2D92"
+  default_prompt: "Use $competitor-alternatives to find comparable models from other brands for this product."
+policy:
+  allow_implicit_invocation: true
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "pricemind"
+      description: "Pricemind MCP server (sign in with your Pricemind account)"
+      transport: "streamable_http"
+      url: "https://mcp.pricemind.io/mcp"

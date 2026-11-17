@@ -1,0 +1,14 @@
+interface:
+  display_name: "Management report"
+  short_description: "Period-over-period pricing review for management"
+  brand_color: "#5B2D92"
+  default_prompt: "Use $management-report to prepare the quarterly pricing review for management."
+policy:
+  allow_implicit_invocation: true
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "pricemind"
+      description: "Pricemind MCP server (sign in with your Pricemind account)"
+      transport: "streamable_http"
+      url: "https://mcp.pricemind.io/mcp"
