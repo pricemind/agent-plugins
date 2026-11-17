@@ -1,6 +1,32 @@
-# Pricemind for Claude
+<p align="center">
+  <img src="logo.png" alt="Pricemind" width="72" height="72">
+</p>
+
+<h1 align="center">Pricemind for Claude</h1>
+
+<p align="center">
+  <strong>Live market prices, in every conversation.</strong><br>
+  Ask Claude about your prices and competitors in plain language. It answers from your Pricemind data and draws the charts in the chat.
+</p>
+
+<p align="center">
+  <a href="https://github.com/pricemind/claude-plugin/releases/download/v1.0.0/pricemind-mcp-chat.mp4">
+    <img src="assets/pricemind-mcp-demo.gif" alt="Claude answers how own-brand prices compare with the cheapest alternatives, using live Pricemind data, then drills into one product's price history" width="960">
+  </a>
+  <br>
+  <sub>▶ <a href="https://github.com/pricemind/claude-plugin/releases/download/v1.0.0/pricemind-mcp-chat.mp4">Watch with sound</a> · demo data</sub>
+</p>
 
 The official [Pricemind](https://pricemind.ai) plugin for Claude. It connects Claude to your Pricemind account, so you can ask about your prices and competitors in plain language and act on the answers.
+
+## See it in action
+
+| Own brand vs. market | Q2 management review | Black Friday watch |
+|---|---|---|
+| [![Own-brand prices compared with the cheapest alternatives](assets/demo-own-brand.jpg)](https://github.com/pricemind/claude-plugin/releases/download/v1.0.0/pricemind-mcp-chat.mp4) | [![Price index and competitor price changes, Q1 vs Q2](assets/demo-management-report.jpg)](https://github.com/pricemind/claude-plugin/releases/download/v1.0.0/pricemind-mcp-report.mp4) | [![Which competitors started cutting prices before Black Friday](assets/demo-black-friday.jpg)](https://github.com/pricemind/claude-plugin/releases/download/v1.0.0/pricemind-mcp-blackfriday.mp4) |
+| "How do our own-brand prices compare with the cheapest alternatives on the market?" | "Prepare the Q2 pricing review for Monday's management meeting." | "Have our competitors started cutting prices already? Show me who, how deep, and since when." |
+
+<sub>The videos use fictional demo data.</sub>
 
 ## What you can do
 
@@ -18,6 +44,7 @@ The official [Pricemind](https://pricemind.ai) plugin for Claude. It connects Cl
 | `skills/matching-review` | A safe review-preview-apply workflow for product matches. |
 | `skills/competitor-alternatives` | Research and recording of cross-brand comparable products. |
 | `skills/pricing-strategies` | Inspecting and safely changing repricing strategies. |
+| `assets/` | The demo GIF and video posters shown in this README. Claude does not load them. |
 
 The plugin contains no code that runs on your machine. It only adds the connection above and these instructions.
 
