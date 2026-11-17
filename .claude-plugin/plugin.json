@@ -8,7 +8,7 @@
     "url": "https://pricemind.ai"
   },
   "homepage": "https://pricemind.ai",
-  "repository": "https://github.com/pricemind/claude-plugin",
+  "repository": "https://github.com/pricemind/agent-plugins",
   "license": "MIT",
   "keywords": [
     "pricing",
