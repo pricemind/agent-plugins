@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "The official Pricemind plugin for Claude.",
-    "version": "1.1.0"
+    "version": "1.1.1"
   },
   "plugins": [
     {
       "name": "pricemind",
       "source": "./",
       "description": "Competitive price intelligence, product matching, competitor alternatives and repricing strategies from your Pricemind account.",
-      "version": "1.1.0"
+      "version": "1.1.1"
     }
   ]
 }

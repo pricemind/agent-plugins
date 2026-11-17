@@ -2,6 +2,15 @@
 
 All notable changes to the Pricemind plugin. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 1.1.1 (2026-11-17)
+
+Fixes from testing the chart view in a real Claude client.
+
+- Price history comes back complete in one result (up to 360 rows), so a month of daily prices draws one chart with the right latest figures instead of one partial chart per page.
+- Prices in the chart show their currency.
+- A partial result is marked as such in the chart and leaves out the "now" figures it cannot know.
+- The assistant no longer draws its own chart or table next to the Pricemind chart.
+
 ## 1.1.0 (2026-11-17)
 
 Pricemind in an AI assistant should feel like a product, not a tool list.

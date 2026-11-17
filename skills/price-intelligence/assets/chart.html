@@ -1,6 +1,6 @@
 <!doctype html>
 <!--
-  Pricemind chart renderer · version 1.1.0
+  Pricemind chart renderer · version 1.1.1
 
   Single source: the Pricemind MCP server, which serves this page as the MCP App
   resource ui://pricemind/chart. The plugin repo pricemind/agent-plugins ships a
@@ -133,6 +133,7 @@ button { font: inherit; color: inherit; }
 .pm-icon-btn:hover { color: var(--pm-ink); }
 .pm-icon-btn svg { width: 14px; height: 14px; }
 
+.pm-warn { margin: 0 0 10px; padding: 7px 10px; border-radius: 8px; font-size: 12px; line-height: 1.45; color: var(--pm-ink); background: color-mix(in srgb, var(--pm-caution) 14%, transparent); border: 1px solid color-mix(in srgb, var(--pm-caution) 42%, transparent); }
 .pm-kpis { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 2px 0 10px; }
 .pm-kpi { min-width: 0; }
 .pm-kpi-label { font-size: 11px; color: var(--pm-ink-3); }
@@ -529,6 +530,10 @@ button { font: inherit; color: inherit; }
       shops: data.shops || raw.shops || {},
       channelId: channelId,
       currency: currency,
+      // More rows exist than this result holds, or this is a later page of one:
+      // either way the newest figures cannot be read from these rows alone.
+      partial: !!(data.page && data.page.has_more === true),
+      continuation: typeof args.cursor === "string" && args.cursor !== "",
       locale: raw.locale || null,
       link: raw.open_in_pricemind_url || null,
       args: args
@@ -733,7 +738,7 @@ button { font: inherit; color: inherit; }
     state.showAllRows = false;
     state.status = "";
     var kind = model && model.visual && model.visual.kind;
-    state.view = model && model.rows.length && drawable(kind) ? "chart" : "table";
+    state.view = model && model.rows.length && drawable(kind) && !model.continuation ? "chart" : "table";
     render();
   }
   function drawable(kind) {
@@ -801,6 +806,11 @@ button { font: inherit; color: inherit; }
       append(root, h("div", { class: "pm-back" }, h("button", { type: "button", class: "pm-link", onclick: back }, [icon(ICONS.back), " Back"])));
     }
 
+    if (model.continuation) {
+      append(root, h("div", { class: "pm-warn", role: "note", text: "This is a later page of a longer result, so it holds only part of the rows. The complete picture needs all pages together." }));
+    } else if (model.partial) {
+      append(root, h("div", { class: "pm-warn", role: "note", text: "Partial result: more rows exist than are shown here, so the newest prices may be missing. Ask for a shorter period or weekly buckets to see everything in one chart." }));
+    }
     var body = h("div", { class: "pm-body" });
     append(root, body);
     var notes = [];
@@ -1199,6 +1209,8 @@ button { font: inherit; color: inherit; }
 
   // Latest own price, its change over the window and the cheapest competitor now.
   function historyKpis(container, model, seriesValues, own, xCol, yCol, sCol) {
+    // "Now" figures from an incomplete result would name the wrong shop.
+    if (model.partial || model.continuation) return;
     var latest = {}, first = {};
     model.rows.forEach(function (r) {
       var key = r[sCol], d = toDate(r[xCol]), n = num(r[yCol]);
