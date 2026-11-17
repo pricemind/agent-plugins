@@ -1,0 +1,14 @@
+interface:
+  display_name: "Promo watch"
+  short_description: "Who started cutting prices, how deep and since when"
+  brand_color: "#5B2D92"
+  default_prompt: "Use $promo-watch to check whether competitors have started cutting prices."
+policy:
+  allow_implicit_invocation: true
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "pricemind"
+      description: "Pricemind MCP server (sign in with your Pricemind account)"
+      transport: "streamable_http"
+      url: "https://mcp.pricemind.io/mcp"

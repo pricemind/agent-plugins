@@ -1,0 +1,14 @@
+interface:
+  display_name: "Weekly review"
+  short_description: "Last 7 days: price moves, position changes, products to act on"
+  brand_color: "#5B2D92"
+  default_prompt: "Use $weekly-review to run my weekly pricing review."
+policy:
+  allow_implicit_invocation: true
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "pricemind"
+      description: "Pricemind MCP server (sign in with your Pricemind account)"
+      transport: "streamable_http"
+      url: "https://mcp.pricemind.io/mcp"

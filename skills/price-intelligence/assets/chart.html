@@ -1,0 +1,1939 @@
+<!doctype html>
+<!--
+  Pricemind chart renderer · version 1.1.0
+
+  Single source: the Pricemind MCP server, which serves this page as the MCP App
+  resource ui://pricemind/chart. The plugin repo pricemind/agent-plugins ships a
+  byte-identical copy at skills/price-intelligence/assets/chart.html, refreshed by
+  scripts/sync-chart.sh. Edit only the server's file.
+
+  No libraries, no network: every style and script is inline, so the page works
+  in an MCP Apps sandbox (CSP default-src 'none') and when opened as a local file.
+
+  TWO MODES
+  1. MCP App. A host that supports MCP Apps (io.modelcontextprotocol/ui) shows this
+     page next to a search_query result. The page talks to the host over
+     postMessage JSON-RPC (ui/initialize, ui/notifications/tool-input,
+     ui/notifications/tool-result, host-context-changed, size-changed, open-link,
+     download-file, request-display-mode, tools/call for drill-down).
+  2. Template. An assistant whose client cannot show MCP Apps copies this file,
+     replaces the JSON inside <script id="pricemind-chart-data"> and opens or
+     publishes the file. A non-null object there switches the page to this mode.
+
+  DATA OBJECT (both modes; in MCP App mode it is built from the tool result)
+    {
+      "title":    "Price history: own price vs competitors",  optional, defaults to visual.title
+      "subtitle": "Bosch GSR 18V-55 · last 90 days",           optional
+      "visual":   { ...the visual hint exactly as search_query returns it... },  optional
+      "rows":     [ ...search_query data.rows... ],             required
+      "columns":  [ {"name": "price", "type": "number"}, ... ], optional (search_query data.columns)
+      "open_in_pricemind_url": "https://app.pricemind.io/channels/12/prices",  optional
+      // also accepted, all optional:
+      "channel_id": 12, "currency": "EUR", "locale": "bg-BG", "shops": {"own": [...], "competitors": [...]}
+    }
+  The raw search_query structured result ({"data": {...}, "visual": {...}}) is also
+  accepted as is.
+
+  HINT HANDLING
+  - Every colour, muted/omitted shop, highlight and note is optional. Missing
+    colours fall back to the Pricemind palette (own indigo, seven competitor slots,
+    then Other grey), so a minimal {"kind": "bar", "x": "title", "y": "gap_pct"}
+    hint draws correctly.
+  - Kinds: step_line, line, bar, grouped_bar, stacked_bar, price_ladder, timeline,
+    heatmap. Unknown kinds or a missing visual show the table.
+  - Heatmap override: a grouped_bar-shaped hint (x = first dimension, series =
+    second dimension, y = value) with kind set to "heatmap" draws rows = x values,
+    columns = series values, cells = y. The native heatmap hint uses x = columns,
+    y = rows and value = the cell column. Without visual.scale the cells diverge at
+    100 when the value column is an index, at 0 when values cross zero, and shade
+    from neutral to indigo otherwise.
+  - The "Open in Pricemind" link is hidden when no URL is given and none can be
+    built from a single channel_id.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Pricemind chart</title>
+<style>
+:root {
+  --pm-ink-fb: #111827;
+  --pm-ink2-fb: #4b5563;
+  --pm-ink3-fb: #6b7280;
+  --pm-line-fb: #e5e7eb;
+  --pm-surface-fb: #ffffff;
+  --pm-surface2-fb: #f8fafc;
+  --pm-page-fb: #f3f4f6;
+  --pm-grid: #eef0f3;
+  --pm-axis: #d1d5db;
+  --pm-guide: #9ca3af;
+  --pm-hover-band: rgba(99, 102, 241, 0.07);
+  --pm-tooltip-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  --pm-brand: #4f46e5;
+  --pm-brand-soft: rgba(79, 70, 229, 0.08);
+  --pm-caution: #b45309;
+
+  --pm-font: var(--font-sans, "Inter var", Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  --pm-ink: var(--color-text-primary, var(--pm-ink-fb));
+  --pm-ink-2: var(--color-text-secondary, var(--pm-ink2-fb));
+  --pm-ink-3: var(--color-text-tertiary, var(--pm-ink3-fb));
+  --pm-line: var(--color-border-tertiary, var(--pm-line-fb));
+  --pm-surface: var(--color-background-primary, var(--pm-surface-fb));
+  --pm-surface-2: var(--color-background-secondary, var(--pm-surface2-fb));
+  --pm-radius: var(--border-radius-lg, 10px);
+  --pm-radius-sm: var(--border-radius-sm, 6px);
+  color-scheme: light dark;
+}
+:root[data-theme="dark"] {
+  --pm-ink-fb: #f3f4f6;
+  --pm-ink2-fb: #d1d5db;
+  --pm-ink3-fb: #9ca3af;
+  --pm-line-fb: #2b3443;
+  --pm-surface-fb: #111827;
+  --pm-surface2-fb: #172030;
+  --pm-page-fb: #0b0f17;
+  --pm-grid: #1f2937;
+  --pm-axis: #4b5563;
+  --pm-guide: #6b7280;
+  --pm-hover-band: rgba(129, 140, 248, 0.12);
+  --pm-tooltip-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --pm-brand: #818cf8;
+  --pm-brand-soft: rgba(129, 140, 248, 0.14);
+  --pm-caution: #fbbf24;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: transparent; }
+body {
+  font-family: var(--pm-font);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--pm-ink);
+  -webkit-font-smoothing: antialiased;
+}
+html.is-page body { background: var(--pm-page-fb); min-height: 100vh; padding: 24px 16px; }
+html.is-page .pm { max-width: 1080px; margin: 0 auto; background: var(--pm-surface); border: 1px solid var(--pm-line); border-radius: 14px; padding: 20px 22px 16px; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04); }
+button { font: inherit; color: inherit; }
+
+.pm { padding: 4px 2px 6px; min-width: 0; }
+.pm-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
+.pm-titles { flex: 1 1 auto; min-width: 0; }
+.pm-brandline { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; color: var(--pm-ink-3); margin-bottom: 2px; }
+.pm-logo { width: 14px; height: 14px; border-radius: 4px; background: var(--pm-brand); display: inline-grid; place-items: center; }
+.pm-logo svg { width: 9px; height: 9px; }
+.pm-title { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.3; color: var(--pm-ink); letter-spacing: -0.005em; }
+.pm-subtitle { margin: 2px 0 0; font-size: 12px; color: var(--pm-ink-3); }
+.pm-tools { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+
+.pm-seg { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--pm-surface-2); border: 1px solid var(--pm-line); }
+.pm-seg button { border: 0; background: transparent; padding: 3px 10px; border-radius: 6px; font-size: 12px; font-weight: 500; color: var(--pm-ink-3); cursor: pointer; min-height: 26px; }
+.pm-seg button[aria-pressed="true"] { background: var(--pm-surface); color: var(--pm-ink); box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08); }
+.pm-icon-btn { border: 1px solid var(--pm-line); background: var(--pm-surface); border-radius: 8px; width: 30px; height: 30px; display: inline-grid; place-items: center; cursor: pointer; color: var(--pm-ink-2); }
+.pm-icon-btn:hover { color: var(--pm-ink); }
+.pm-icon-btn svg { width: 14px; height: 14px; }
+
+.pm-kpis { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 2px 0 10px; }
+.pm-kpi { min-width: 0; }
+.pm-kpi-label { font-size: 11px; color: var(--pm-ink-3); }
+.pm-kpi-value { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--pm-ink); }
+.pm-kpi-value.is-caution { color: var(--pm-caution); }
+.pm-kpi-value.is-own { color: var(--pm-brand); }
+
+.pm-legend { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.pm-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; border: 1px solid var(--pm-line); background: var(--pm-surface); border-radius: 999px; padding: 2px 10px 2px 8px; font-size: 12px; color: var(--pm-ink-2); cursor: pointer; min-height: 26px; }
+.pm-chip:hover { color: var(--pm-ink); border-color: var(--pm-axis); }
+.pm-chip.is-own { font-weight: 600; color: var(--pm-ink); }
+.pm-chip.is-hidden { opacity: 0.45; }
+.pm-chip.is-hidden .pm-swatch { background: transparent !important; box-shadow: inset 0 0 0 1.5px var(--pm-swatch); }
+.pm-chip.is-muted .pm-chip-label { text-decoration: none; color: var(--pm-ink-3); }
+.pm-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-swatch { width: 9px; height: 9px; border-radius: 3px; flex: 0 0 auto; background: var(--pm-swatch); }
+.pm-tag { font-size: 10px; font-weight: 600; padding: 0 5px; border-radius: 4px; background: var(--pm-brand-soft); color: var(--pm-brand); }
+.pm-tag.is-muted { background: var(--pm-surface-2); color: var(--pm-ink-3); font-weight: 500; }
+
+.pm-body { position: relative; min-width: 0; }
+.pm-facet + .pm-facet { margin-top: 14px; }
+.pm-facet-title { display: flex; align-items: baseline; gap: 8px; font-size: 12px; font-weight: 600; color: var(--pm-ink-2); margin: 0 0 4px; }
+.pm-facet-title .pm-link { font-weight: 500; }
+.pm-plot { position: relative; width: 100%; }
+.pm-plot svg { display: block; overflow: visible; touch-action: pan-y; }
+.pm-svg text { font-family: var(--pm-font); }
+.pm-tick { font-size: 11px; fill: var(--pm-ink-3); font-variant-numeric: tabular-nums; }
+.pm-axis-line { stroke: var(--pm-axis); stroke-width: 1; }
+.pm-gridline { stroke: var(--pm-grid); stroke-width: 1; }
+.pm-refline { stroke-width: 1.25; stroke-dasharray: 5 4; }
+.pm-reflabel { font-size: 10.5px; font-weight: 600; }
+.pm-annot-line { stroke: var(--pm-guide); stroke-width: 1; stroke-dasharray: 3 3; }
+.pm-annot-label { font-size: 10.5px; fill: var(--pm-ink-3); }
+.pm-guide { stroke: var(--pm-guide); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
+.pm-band { fill: var(--pm-hover-band); pointer-events: none; }
+.pm-dot { stroke: var(--pm-surface); stroke-width: 1.5; }
+.pm-series { transition: opacity 120ms ease; }
+.pm-svg.has-focus .pm-series:not(.is-focus) { opacity: 0.18; }
+.pm-endlabel { font-size: 11px; font-weight: 500; }
+.pm-endlabel.is-own { font-weight: 700; }
+.pm-bar { transition: opacity 120ms ease; cursor: default; }
+.pm-bar.is-clickable { cursor: pointer; }
+.pm-svg.has-active .pm-bar:not(.is-active) { opacity: 0.45; }
+.pm-barlabel { font-size: 11px; fill: var(--pm-ink-2); font-variant-numeric: tabular-nums; }
+.pm-catlabel { font-size: 11.5px; fill: var(--pm-ink-2); }
+.pm-catlabel.is-own { font-weight: 700; fill: var(--pm-ink); }
+.pm-cell-text { font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; pointer-events: none; }
+.pm-cell { stroke: var(--pm-surface); stroke-width: 2; }
+.pm-ladder-row.is-clickable { cursor: pointer; }
+.pm-ladder-row:hover .pm-ladder-track { stroke: var(--pm-axis); }
+.pm-ladder-track { stroke: var(--pm-grid); stroke-width: 1; }
+.pm-ladder-shop { font-size: 12px; fill: var(--pm-ink-2); }
+.pm-ladder-shop.is-own { font-weight: 700; fill: var(--pm-ink); }
+.pm-ladder-price { font-size: 11.5px; font-weight: 600; fill: var(--pm-ink); font-variant-numeric: tabular-nums; }
+.pm-ladder-price.is-caution { fill: var(--pm-caution); }
+.pm-ladder-flag { font-size: 10px; fill: var(--pm-ink-3); }
+
+.pm-tooltip { position: absolute; z-index: 5; pointer-events: none; min-width: 150px; max-width: 300px; border: 1px solid var(--pm-line); border-radius: 8px; background: var(--pm-surface); padding: 8px 10px; font-size: 12px; line-height: 1.45; color: var(--pm-ink-2); box-shadow: var(--pm-tooltip-shadow); opacity: 0; transform: translateY(2px); transition: opacity 80ms ease, transform 80ms ease; }
+.pm-tooltip.is-on { opacity: 1; transform: none; }
+.pm-tt-title { margin-bottom: 4px; font-weight: 600; color: var(--pm-ink); }
+.pm-tt-row { display: flex; align-items: center; gap: 6px; }
+.pm-tt-row.is-own .pm-tt-label { font-weight: 600; color: var(--pm-ink); }
+.pm-tt-row.is-muted { opacity: 0.6; }
+.pm-tt-sw { width: 8px; height: 8px; border-radius: 999px; flex: 0 0 auto; }
+.pm-tt-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-tt-value { margin-left: 12px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--pm-ink); }
+.pm-tt-note { margin-top: 4px; font-size: 11px; color: var(--pm-ink-3); }
+
+.pm-table-wrap { width: 100%; overflow-x: auto; border: 1px solid var(--pm-line); border-radius: var(--pm-radius-sm); }
+.pm-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.pm-table th { text-align: left; font-weight: 600; font-size: 11px; color: var(--pm-ink-3); background: var(--pm-surface-2); padding: 7px 10px; white-space: nowrap; border-bottom: 1px solid var(--pm-line); }
+.pm-table td { padding: 6px 10px; border-bottom: 1px solid var(--pm-line); white-space: nowrap; max-width: 320px; overflow: hidden; text-overflow: ellipsis; color: var(--pm-ink-2); }
+.pm-table tr:last-child td { border-bottom: 0; }
+.pm-table td.is-num, .pm-table th.is-num { text-align: right; font-variant-numeric: tabular-nums; }
+.pm-table tr.is-own td { color: var(--pm-ink); font-weight: 600; background: var(--pm-brand-soft); }
+.pm-table tr.is-own td:first-child { box-shadow: inset 3px 0 0 var(--pm-brand); }
+
+.pm-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-top: 10px; }
+.pm-notes { flex: 1 1 260px; min-width: 0; font-size: 11.5px; color: var(--pm-ink-3); }
+.pm-notes p { margin: 0; }
+.pm-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+.pm-btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--pm-line); background: var(--pm-surface); border-radius: 8px; padding: 5px 11px; font-size: 12px; font-weight: 500; color: var(--pm-ink-2); cursor: pointer; text-decoration: none; min-height: 30px; }
+.pm-btn:hover { color: var(--pm-ink); border-color: var(--pm-axis); }
+.pm-btn.is-primary { background: var(--pm-brand); border-color: var(--pm-brand); color: #fff; }
+.pm-btn svg { width: 13px; height: 13px; }
+.pm-link { display: inline-flex; align-items: center; gap: 4px; color: var(--pm-brand); cursor: pointer; background: none; border: 0; padding: 0; font-size: 12px; font-weight: 500; }
+.pm-link svg { width: 12px; height: 12px; }
+.pm-link:hover { text-decoration: underline; }
+.pm-back { margin-bottom: 8px; }
+.pm-status { font-size: 11.5px; color: var(--pm-ink-3); }
+.pm-more { margin-top: 8px; }
+
+.pm-empty { padding: 28px 12px; text-align: center; color: var(--pm-ink-3); font-size: 13px; }
+.pm-skeleton { display: grid; gap: 10px; padding: 6px 0; }
+.pm-sk { border-radius: 6px; background: linear-gradient(90deg, var(--pm-surface-2) 0%, var(--pm-line) 50%, var(--pm-surface-2) 100%); background-size: 200% 100%; animation: pm-shimmer 1.2s ease-in-out infinite; }
+@keyframes pm-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .pm-sk { animation: none; } .pm-tooltip, .pm-series, .pm-bar { transition: none; } }
+:focus-visible { outline: 2px solid var(--pm-brand); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<div id="app" class="pm" aria-live="polite"></div>
+<script type="application/json" id="pricemind-chart-data">null</script>
+<script>
+(function () {
+  "use strict";
+
+  var VERSION = "1.1.0";
+  var APP_PROTOCOL = "2026-01-26";
+  var APP_URL = "https://app.pricemind.io";
+
+  // The Pricemind chart palette (the same one the server's chart hint uses); used whenever a hint
+  // leaves a colour out.
+  var PALETTE = {
+    own: { light: "#4f46e5", dark: "#6366f1" },
+    other: { light: "#9ca3af", dark: "#6b7280" },
+    price_raised: { light: "#047857", dark: "#34d399" },
+    price_lowered: { light: "#b91c1c", dark: "#f87171" },
+    caution: { light: "#b45309", dark: "#fbbf24" },
+    reference: { light: "#646c7a", dark: "#9ca3af" },
+    grid: { light: "#eef0f3", dark: "#1f2937" }
+  };
+  var COMPETITORS = [
+    { light: "#ea580c", dark: "#ea580c" }, { light: "#0284c7", dark: "#0e9ad6" }, { light: "#f59e0b", dark: "#d97706" },
+    { light: "#c026d3", dark: "#d946ef" }, { light: "#06b6d4", dark: "#0891b2" }, { light: "#a16207", dark: "#a16207" },
+    { light: "#db2777", dark: "#ec4899" }
+  ];
+  var SHOP_COLUMNS = ["shop", "competitor", "lowest_competitor", "retailer"];
+  var SVGNS = "http://www.w3.org/2000/svg";
+
+  var root = document.getElementById("app");
+  var state = {
+    mode: "page",          // "app" (MCP App), "template" (embedded data) or "page" (nothing to show)
+    model: null,
+    stack: [],
+    args: null,
+    host: { context: {}, capabilities: {}, info: null },
+    view: "chart",
+    hidden: {},
+    expanded: false,
+    showAllRows: false,
+    busy: false,
+    status: "",
+    forcedTheme: null
+  };
+
+  // ---------------------------------------------------------------- helpers
+
+  function h(tag, attrs, children) {
+    var node = document.createElement(tag);
+    setAttrs(node, attrs);
+    append(node, children);
+    return node;
+  }
+  function s(tag, attrs, parent) {
+    var node = document.createElementNS(SVGNS, tag);
+    setAttrs(node, attrs);
+    if (parent) parent.appendChild(node);
+    return node;
+  }
+  function setAttrs(node, attrs) {
+    if (!attrs) return;
+    Object.keys(attrs).forEach(function (key) {
+      var value = attrs[key];
+      if (value === undefined || value === null || value === false) return;
+      if (key === "text") node.textContent = value;
+      else if (key === "class") node.setAttribute("class", value);
+      else if (key === "style" && typeof value === "object") Object.keys(value).forEach(function (k) { node.style.setProperty(k, value[k]); });
+      else if (key.indexOf("on") === 0 && typeof value === "function") node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value === true ? "" : String(value));
+    });
+  }
+  function append(node, children) {
+    if (children === undefined || children === null || children === false) return;
+    if (!Array.isArray(children)) children = [children];
+    children.forEach(function (child) {
+      if (child === undefined || child === null || child === false) return;
+      node.appendChild(typeof child === "string" || typeof child === "number" ? document.createTextNode(String(child)) : child);
+    });
+  }
+  function icon(path) {
+    var svg = document.createElementNS(SVGNS, "svg");
+    svg.setAttribute("viewBox", "0 0 16 16");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "1.6");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    svg.innerHTML = path;
+    return svg;
+  }
+  var ICONS = {
+    external: '<path d="M9 3h4v4M13 3 7.5 8.5M12 9.5V13H3V4h3.5"/>',
+    download: '<path d="M8 2.5v8M4.5 7 8 10.5 11.5 7M3 13h10"/>',
+    expand: '<path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9"/>',
+    collapse: '<path d="M13.5 6.5h-4v-4M2.5 9.5h4v4M9.5 6.5 14 2M6.5 9.5 2 14"/>',
+    back: '<path d="M10 3 5 8l5 5"/>'
+  };
+
+  function num(value) {
+    if (typeof value === "number") return isFinite(value) ? value : null;
+    if (typeof value === "string" && value.trim() !== "" && !isNaN(+value)) return +value;
+    return null;
+  }
+  function str(value) { return value === undefined || value === null ? "" : String(value); }
+  function uniq(list) { var seen = {}; return list.filter(function (v) { var k = str(v); if (seen[k]) return false; seen[k] = true; return true; }); }
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+  function shopName(value) { return str(value).replace(/^https?:\/\//, "").replace(/^www\./, ""); }
+
+  var measureCtx = null;
+  function textWidth(text, size, weight) {
+    if (!measureCtx) measureCtx = document.createElement("canvas").getContext("2d");
+    var family = getComputedStyle(document.body).fontFamily || "sans-serif";
+    measureCtx.font = (weight || 400) + " " + (size || 11) + "px " + family;
+    return measureCtx.measureText(str(text)).width;
+  }
+  function truncate(text, size, max, weight) {
+    text = str(text);
+    if (textWidth(text, size, weight) <= max) return text;
+    while (text.length > 1 && textWidth(text + "…", size, weight) > max) text = text.slice(0, -1);
+    return text + "…";
+  }
+
+  // ---------------------------------------------------------------- theme and formats
+
+  function theme() {
+    if (state.forcedTheme) return state.forcedTheme;
+    var fromHost = state.host.context && state.host.context.theme;
+    if (fromHost === "dark" || fromHost === "light") return fromHost;
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  function pick(color) {
+    if (!color) return null;
+    if (typeof color === "string") return color;
+    return theme() === "dark" ? (color.dark || color.light) : (color.light || color.dark);
+  }
+  function colors() {
+    var v = state.model && state.model.visual;
+    var c = (v && v.colors) || {};
+    var out = {};
+    Object.keys(PALETTE).forEach(function (key) { out[key] = pick(c[key] || PALETTE[key]); });
+    return out;
+  }
+  function locale() {
+    return (state.model && state.model.locale) || (state.host.context && state.host.context.locale) || navigator.language || "en";
+  }
+
+  function columnKind(name) {
+    var model = state.model;
+    var type = model && model.columnTypes[name];
+    var n = str(name).toLowerCase();
+    if (type === "timestamp" || type === "date" || /(_at|_date|^date|bucket_start|:day|:week|:month|:year|:hour)$/.test(n)) return "time";
+    if (type === "boolean") return "bool";
+    if (/index/.test(n)) return "index";
+    if (/^(n|count|changes|products|offers|shops|competitors)$|^count_|_count$|_total$/.test(n)) return "count";
+    if (/(pct|percent|^price_diff$|_diff$|^diff|gap)/.test(n) && /(diff|change|delta|gap|vs_own)/.test(n)) return "signed_pct";
+    if (/(pct|percent|share|_rate$)/.test(n)) return "pct";
+    if (/(price|^min$|^max$|^avg$|amount|cost|revenue|average|_min$|_max$|rrp)/.test(n)) return "money";
+    if (/(count|^n$|products|offers|changes|_total$)/.test(n) || type === "integer") return "count";
+    if (type === "number") return "number";
+    return "text";
+  }
+  function numberFormat(options) {
+    try { return new Intl.NumberFormat(locale(), options); } catch (e) { return new Intl.NumberFormat("en", options); }
+  }
+  function formatMoney(value, compact) {
+    var currency = state.model && state.model.currency;
+    var abs = Math.abs(value);
+    var fraction = Math.round(value) === value ? 0 : (compact && abs >= 100 ? 0 : 2);
+    if (currency) {
+      try { return numberFormat({ style: "currency", currency: currency, minimumFractionDigits: fraction, maximumFractionDigits: fraction }).format(value); } catch (e) { /* unknown currency: plain number */ }
+    }
+    return numberFormat({ minimumFractionDigits: fraction, maximumFractionDigits: fraction }).format(value);
+  }
+  function formatValue(value, column, compact) {
+    if (value === undefined || value === null || value === "") return "–";
+    var kind = columnKind(column);
+    if (kind === "bool") return value === true || value === "true" ? "Yes" : "No";
+    if (kind === "time") return formatDate(value, compact ? "day" : "auto");
+    var n = num(value);
+    if (n === null) return column && SHOP_COLUMNS.indexOf(column) >= 0 ? shopName(value) : str(value);
+    switch (kind) {
+      case "money": return formatMoney(n, compact);
+      case "signed_pct": return (n > 0 ? "+" : n < 0 ? "−" : "") + numberFormat({ maximumFractionDigits: Math.abs(n) >= 10 ? 0 : 1 }).format(Math.abs(n)) + "%";
+      case "pct": return numberFormat({ maximumFractionDigits: Math.abs(n) >= 10 ? 0 : 1 }).format(n) + "%";
+      case "index": return numberFormat({ minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(n);
+      case "count": return numberFormat({ maximumFractionDigits: 0 }).format(n);
+      default: return numberFormat({ maximumFractionDigits: Math.abs(n) >= 100 ? 0 : 2 }).format(n);
+    }
+  }
+  function toDate(value) {
+    if (value instanceof Date) return value;
+    if (typeof value !== "string" || !/^\d{4}-\d{2}(-\d{2})?/.test(value)) return null;
+    var text = value.length === 7 ? value + "-01" : value;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) text += "T00:00:00Z";
+    var date = new Date(text);
+    return isNaN(date.getTime()) ? null : date;
+  }
+  function formatDate(value, unit) {
+    var date = toDate(value);
+    if (!date) return str(value);
+    var options = { timeZone: "UTC" };
+    if (unit === "hour") { options.hour = "2-digit"; options.minute = "2-digit"; }
+    else if (unit === "month") { options.month = "short"; options.year = "numeric"; }
+    else if (unit === "year") { options.year = "numeric"; }
+    else if (unit === "datetime") { options.day = "numeric"; options.month = "short"; options.hour = "2-digit"; options.minute = "2-digit"; }
+    else { options.day = "numeric"; options.month = "short"; if (unit === "auto") options.year = "numeric"; }
+    try { return new Intl.DateTimeFormat(locale(), options).format(date); } catch (e) { return date.toISOString().slice(0, 10); }
+  }
+
+  // ---------------------------------------------------------------- scales
+
+  function niceStep(span, count) {
+    var raw = span / Math.max(1, count);
+    var power = Math.pow(10, Math.floor(Math.log10(raw)));
+    var unit = raw / power;
+    var step = unit >= 7.5 ? 10 : unit >= 3.5 ? 5 : unit >= 1.5 ? 2 : 1;
+    return step * power;
+  }
+  function niceDomain(lo, hi, count, fromZero) {
+    if (fromZero) { lo = Math.min(0, lo); hi = Math.max(0, hi); }
+    if (lo === hi) { var pad = Math.abs(lo) * 0.1 || 1; lo -= pad; hi += pad; }
+    else if (!fromZero) { var p = (hi - lo) * 0.08; lo -= p; hi += p; if (lo < 0 && arguments[0] >= 0) lo = 0; }
+    var step = niceStep(hi - lo, count);
+    var start = Math.floor(lo / step) * step;
+    var end = Math.ceil(hi / step) * step;
+    var ticks = [];
+    for (var v = start; v <= end + step / 2; v += step) ticks.push(Math.round(v / step) * step);
+    return { lo: start, hi: end, ticks: ticks };
+  }
+  function linear(d0, d1, r0, r1) {
+    var k = d1 === d0 ? 0 : (r1 - r0) / (d1 - d0);
+    return function (v) { return r0 + (v - d0) * k; };
+  }
+  var TIME_UNITS = [
+    { ms: 3600e3, unit: "hour" }, { ms: 6 * 3600e3, unit: "hour" }, { ms: 864e5, unit: "day" }, { ms: 2 * 864e5, unit: "day" },
+    { ms: 7 * 864e5, unit: "day" }, { ms: 14 * 864e5, unit: "day" }, { ms: 30 * 864e5, unit: "month", months: 1 },
+    { ms: 91 * 864e5, unit: "month", months: 3 }, { ms: 182 * 864e5, unit: "month", months: 6 }, { ms: 365 * 864e5, unit: "year", months: 12 }
+  ];
+  function timeTicks(lo, hi, width) {
+    var span = hi - lo;
+    var want = Math.max(2, Math.floor(width / 92));
+    var choice = TIME_UNITS[TIME_UNITS.length - 1];
+    for (var i = 0; i < TIME_UNITS.length; i++) { if (span / TIME_UNITS[i].ms <= want) { choice = TIME_UNITS[i]; break; } }
+    var ticks = [];
+    var d = new Date(lo);
+    if (choice.months) {
+      d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+      while (d.getTime() < lo) d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + choice.months, 1));
+      while (d.getTime() <= hi) { ticks.push(d.getTime()); d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + choice.months, 1)); }
+    } else {
+      var start = Math.ceil(lo / choice.ms) * choice.ms;
+      if (choice.ms === 7 * 864e5) { // weeks start on Monday
+        var day = new Date(lo); var offset = (8 - day.getUTCDay()) % 7;
+        start = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + offset);
+      }
+      for (var t = start; t <= hi; t += choice.ms) ticks.push(t);
+    }
+    if (ticks.length < 2) ticks = [lo, hi];
+    return { ticks: ticks, unit: choice.unit === "year" ? "month" : choice.unit };
+  }
+
+  // ---------------------------------------------------------------- model
+
+  function normalise(raw, args) {
+    if (!raw || typeof raw !== "object") return null;
+    if (raw.structuredContent) raw = raw.structuredContent;
+    var data = raw.data && typeof raw.data === "object" && Array.isArray(raw.data.rows) ? raw.data : raw;
+    var visual = raw.visual || data.visual || null;
+    var rows = Array.isArray(data.rows) ? data.rows.filter(function (r) { return r && typeof r === "object"; }) : [];
+    var columns = Array.isArray(data.columns) ? data.columns : [];
+    var columnTypes = {};
+    var names = [];
+    columns.forEach(function (c) {
+      var name = typeof c === "string" ? c : c && c.name;
+      if (!name) return;
+      names.push(name);
+      columnTypes[name] = typeof c === "object" ? c.type : undefined;
+    });
+    if (!names.length) rows.slice(0, 50).forEach(function (r) { Object.keys(r).forEach(function (k) { if (names.indexOf(k) < 0) names.push(k); }); });
+    args = args || {};
+    var channelId = num(raw.channel_id) || num(args.channel_id) || (Array.isArray(args.channel_ids) && args.channel_ids.length === 1 ? num(args.channel_ids[0]) : null);
+    if (!channelId) { var ids = uniq(rows.map(function (r) { return r.channel_id; }).filter(function (v) { return v !== undefined; })); if (ids.length === 1) channelId = num(ids[0]); }
+    var currency = raw.currency || data.currency || (rows[0] && typeof rows[0].currency === "string" ? rows[0].currency : null);
+    var model = {
+      title: humanTitle(raw.title || (visual && visual.title) || datasetTitle(data.dataset || args.dataset)),
+      subtitle: raw.subtitle || describeWindow(data),
+      visual: visual,
+      rows: rows,
+      columns: names,
+      columnTypes: columnTypes,
+      dataset: data.dataset || args.dataset || "",
+      shops: data.shops || raw.shops || {},
+      channelId: channelId,
+      currency: currency,
+      locale: raw.locale || null,
+      link: raw.open_in_pricemind_url || null,
+      args: args
+    };
+    if (!model.link && channelId) {
+      model.link = APP_URL + "/channels/" + channelId + "/prices/";
+    }
+    return model;
+  }
+  // Hint titles name columns ("avg_change_pct by shop"); read them as words.
+  function humanTitle(text) {
+    text = str(text).replace(/\b[a-z]+(?:_[a-z0-9]+)+\b/g, function (m) { return m.replace(/_/g, " "); }).replace(/\bpct\b/g, "%").replace(/\bavg\b/g, "average");
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+  function datasetTitle(dataset) {
+    var titles = { price_history: "Price history", offers: "Competitor offers", price_changes: "Price changes", products: "Products", comparables: "Comparable products", group_cells: "Product group by retailer", comparable_history: "Group price history", tier_analytics_daily: "Price index over time" };
+    return titles[dataset] || "Pricemind result";
+  }
+  function describeWindow(data) {
+    var w = data && data.window;
+    if (!w || typeof w !== "object") return "";
+    var from = w.from || w.start, to = w.to || w.end;
+    if (!from) return "";
+    var bucket = w.bucket && w.bucket !== "raw" ? " · by " + w.bucket : "";
+    return formatDate(from, "auto") + " – " + (to ? formatDate(to, "auto") : "now") + bucket;
+  }
+
+  // Own shops: the hint's highlight, rows marked is_own and the result's shops.own.
+  function ownSet(model, column) {
+    var own = {};
+    var v = model.visual || {};
+    (Array.isArray(model.shops.own) ? model.shops.own : []).forEach(function (s) { own[s] = true; });
+    var hl = v.highlight;
+    // Row flags name a shop only in columns that hold shops or series names.
+    var shopLike = column && (SHOP_COLUMNS.indexOf(column) >= 0 || /^(series|label|offer_label|seller)$/.test(column));
+    if (shopLike) model.rows.forEach(function (r) {
+      if (r.is_own === true && r[column] !== undefined) own[r[column]] = true;
+      if (hl && hl.field && typeof hl.value === "boolean" && r[hl.field] === hl.value && hl.field !== column) own[r[column]] = true;
+    });
+    if (hl && hl.field === column) own[hl.value] = true;
+    return own;
+  }
+  function seriesColorFn(model, values, own) {
+    var v = model.visual || {};
+    var given = v.series_colors || {};
+    var order = Array.isArray(model.shops.competitors) && model.shops.competitors.length ? model.shops.competitors : values.filter(function (x) { return !own[x]; });
+    var c = colors();
+    return function (value) {
+      if (given[value]) return pick(given[value]);
+      if (own[value]) return c.own;
+      var slot = order.indexOf(value);
+      if (slot < 0) slot = values.filter(function (x) { return !own[x]; }).indexOf(value);
+      return slot >= 0 && slot < COMPETITORS.length ? pick(COMPETITORS[slot]) : c.other;
+    };
+  }
+  function listOf(v, key) { return Array.isArray(v && v[key]) ? v[key] : []; }
+
+  // ---------------------------------------------------------------- host bridge (MCP Apps)
+
+  var bridge = {
+    next: 1,
+    pending: {},
+    request: function (method, params, timeout) {
+      var id = bridge.next++;
+      return new Promise(function (resolve, reject) {
+        var timer = setTimeout(function () { delete bridge.pending[id]; reject(new Error("Request timed out")); }, timeout || 60000);
+        bridge.pending[id] = { resolve: function (v) { clearTimeout(timer); resolve(v); }, reject: function (e) { clearTimeout(timer); reject(e); } };
+        window.parent.postMessage({ jsonrpc: "2.0", id: id, method: method, params: params || {} }, "*");
+      });
+    },
+    notify: function (method, params) {
+      window.parent.postMessage({ jsonrpc: "2.0", method: method, params: params || {} }, "*");
+    },
+    respond: function (id, result) {
+      window.parent.postMessage({ jsonrpc: "2.0", id: id, result: result || {} }, "*");
+    }
+  };
+
+  function onMessage(event) {
+    if (event.source !== window.parent) return;
+    var message = event.data;
+    if (!message || message.jsonrpc !== "2.0") return;
+    if (message.id !== undefined && !message.method) {
+      var waiting = bridge.pending[message.id];
+      if (!waiting) return;
+      delete bridge.pending[message.id];
+      if (message.error) waiting.reject(Object.assign(new Error(message.error.message || "Host error"), { code: message.error.code }));
+      else waiting.resolve(message.result);
+      return;
+    }
+    var params = message.params || {};
+    switch (message.method) {
+      case "ui/notifications/tool-input":
+        state.args = params.arguments || {};
+        break;
+      case "ui/notifications/tool-input-partial":
+        if (!state.args) renderSkeleton();
+        break;
+      case "ui/notifications/tool-result":
+        if (params.isError) { showMessage(errorText(params) || "The query failed."); break; }
+        state.stack = [];
+        load(normalise(params, state.args || {}));
+        break;
+      case "ui/notifications/tool-cancelled":
+        showMessage("The query was cancelled.");
+        break;
+      case "ui/notifications/host-context-changed":
+        applyHostContext(params);
+        render();
+        break;
+      case "ui/resource-teardown":
+        bridge.respond(message.id, {});
+        break;
+      case "ping":
+        bridge.respond(message.id, {});
+        break;
+      default:
+        if (message.id !== undefined) window.parent.postMessage({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } }, "*");
+    }
+  }
+  function errorText(result) {
+    var content = result && result.content;
+    if (Array.isArray(content)) for (var i = 0; i < content.length; i++) if (content[i] && content[i].type === "text") return content[i].text;
+    return "";
+  }
+
+  function applyHostContext(context) {
+    if (!context) return;
+    var merged = state.host.context || {};
+    Object.keys(context).forEach(function (k) { merged[k] = context[k]; });
+    state.host.context = merged;
+    var vars = context.styles && context.styles.variables;
+    if (vars) Object.keys(vars).forEach(function (k) { if (vars[k]) document.documentElement.style.setProperty(k.indexOf("--") === 0 ? k : "--" + k, vars[k]); });
+    var fonts = context.styles && context.styles.css && context.styles.css.fonts;
+    if (fonts && !document.getElementById("pm-host-fonts")) document.head.appendChild(h("style", { id: "pm-host-fonts", text: fonts }));
+    applyTheme();
+    var insets = merged.safeAreaInsets;
+    if (insets) root.style.padding = [insets.top || 0, insets.right || 0, insets.bottom || 0, insets.left || 0].map(function (v) { return Math.max(v, 2) + "px"; }).join(" ");
+  }
+  function applyTheme() {
+    document.documentElement.setAttribute("data-theme", theme());
+    document.documentElement.style.colorScheme = theme();
+  }
+  function hostSupports(feature) {
+    var caps = state.host.capabilities || {};
+    return !!caps[feature];
+  }
+  function displayMode() { return (state.host.context && state.host.context.displayMode) || "inline"; }
+  function canFullscreen() {
+    var modes = state.host.context && state.host.context.availableDisplayModes;
+    return state.mode === "app" && Array.isArray(modes) && modes.indexOf("fullscreen") >= 0;
+  }
+
+  function connect() {
+    window.addEventListener("message", onMessage);
+    renderSkeleton();
+    bridge.request("ui/initialize", {
+      appInfo: { name: "Pricemind chart", version: VERSION },
+      appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] },
+      protocolVersion: APP_PROTOCOL
+    }, 10000).then(function (result) {
+      result = result || {};
+      state.host.capabilities = result.hostCapabilities || {};
+      state.host.info = result.hostInfo || null;
+      applyHostContext(result.hostContext || {});
+      bridge.notify("ui/notifications/initialized", {});
+      watchSize();
+    }).catch(function () {
+      // Not inside an MCP Apps host after all.
+      state.mode = "page";
+      render();
+    });
+  }
+  var lastSize = "";
+  function watchSize() {
+    var report = function () {
+      var height = Math.ceil(document.documentElement.getBoundingClientRect().height);
+      var width = Math.ceil(document.documentElement.scrollWidth);
+      var key = width + "x" + height;
+      if (key === lastSize || height === 0) return;
+      lastSize = key;
+      bridge.notify("ui/notifications/size-changed", { width: width, height: height });
+    };
+    if (window.ResizeObserver) new ResizeObserver(report).observe(document.documentElement);
+    report();
+  }
+
+  function openLink(url) {
+    if (!url) return;
+    if (state.mode === "app") {
+      bridge.request("ui/open-link", { url: url }).catch(function () { window.open(url, "_blank", "noopener"); });
+    } else {
+      window.open(url, "_blank", "noopener");
+    }
+  }
+
+  // ---------------------------------------------------------------- render shell
+
+  function load(model) {
+    state.model = model;
+    state.hidden = {};
+    state.showAllRows = false;
+    state.status = "";
+    var kind = model && model.visual && model.visual.kind;
+    state.view = model && model.rows.length && drawable(kind) ? "chart" : "table";
+    render();
+  }
+  function drawable(kind) {
+    return ["step_line", "line", "bar", "grouped_bar", "stacked_bar", "price_ladder", "timeline", "heatmap"].indexOf(kind) >= 0;
+  }
+
+  function renderSkeleton() {
+    root.innerHTML = "";
+    append(root, h("div", { class: "pm-skeleton", "aria-label": "Loading chart" }, [
+      h("div", { class: "pm-sk", style: { width: "42%", height: "16px" } }),
+      h("div", { class: "pm-sk", style: { width: "26%", height: "11px" } }),
+      h("div", { class: "pm-sk", style: { width: "100%", height: "220px", "border-radius": "10px" } })
+    ]));
+  }
+  function showMessage(text) {
+    root.innerHTML = "";
+    append(root, h("div", { class: "pm-empty", text: text }));
+  }
+
+  var renderQueued = false;
+  function render() {
+    applyTheme();
+    var model = state.model;
+    if (!model) {
+      if (state.mode === "page") {
+        root.innerHTML = "";
+        append(root, [
+          brandLine(),
+          h("div", { class: "pm-empty" }, [
+            h("div", { style: { "font-weight": "600", color: "var(--pm-ink)", "margin-bottom": "4px" }, text: "No chart data yet" }),
+            "Fill the JSON in <script id=\"pricemind-chart-data\"> with a search_query result: {\"visual\": …, \"rows\": […], \"columns\": […]}."
+          ])
+        ]);
+      }
+      return;
+    }
+    root.innerHTML = "";
+    var v = model.visual || {};
+    var kind = v.kind;
+
+    var titles = h("div", { class: "pm-titles" }, [
+      brandLine(),
+      h("h1", { class: "pm-title", text: model.title }),
+      model.subtitle ? h("p", { class: "pm-subtitle", text: model.subtitle }) : null
+    ]);
+    var tools = h("div", { class: "pm-tools" });
+    if (drawable(kind) && model.rows.length) {
+      var seg = h("div", { class: "pm-seg", role: "group", "aria-label": "View" });
+      [["chart", "Chart"], ["table", "Table"]].forEach(function (pair) {
+        append(seg, h("button", { type: "button", "aria-pressed": state.view === pair[0] ? "true" : "false", text: pair[1], onclick: function () { state.view = pair[0]; render(); } }));
+      });
+      append(tools, seg);
+    }
+    if (canFullscreen()) {
+      var full = displayMode() === "fullscreen";
+      append(tools, h("button", { type: "button", class: "pm-icon-btn", title: full ? "Back to the conversation" : "Full screen", "aria-label": full ? "Exit full screen" : "Full screen", onclick: function () {
+        bridge.request("ui/request-display-mode", { mode: full ? "inline" : "fullscreen" }).then(function (r) {
+          if (r && r.mode) { state.host.context.displayMode = r.mode; render(); }
+        }).catch(function () {});
+      } }, icon(full ? ICONS.collapse : ICONS.expand)));
+    }
+    append(root, h("div", { class: "pm-head" }, [titles, tools]));
+
+    if (state.stack.length) {
+      append(root, h("div", { class: "pm-back" }, h("button", { type: "button", class: "pm-link", onclick: back }, [icon(ICONS.back), " Back"])));
+    }
+
+    var body = h("div", { class: "pm-body" });
+    append(root, body);
+    var notes = [];
+    if (!model.rows.length) {
+      append(body, h("div", { class: "pm-empty", text: "No rows matched this query." }));
+    } else if (state.view === "table" || !drawable(kind)) {
+      renderTable(body, model);
+    } else {
+      try {
+        notes = drawChart(body, model) || [];
+      } catch (error) {
+        body.innerHTML = "";
+        renderTable(body, model);
+        notes = ["The chart could not be drawn from this result, so it is shown as a table."];
+        if (window.console) console.error(error);
+      }
+    }
+    renderFoot(model, notes);
+  }
+  function brandLine() {
+    var logo = h("span", { class: "pm-logo", "aria-hidden": "true" });
+    logo.appendChild(icon('<path d="M3 11.5 6.5 7l2.5 2.5L13 4.5" stroke="#fff" stroke-width="2.2"/>'));
+    return h("div", { class: "pm-brandline" }, [logo, "Pricemind"]);
+  }
+  function renderFoot(model, notes) {
+    var foot = h("div", { class: "pm-foot" });
+    var noteBox = h("div", { class: "pm-notes" });
+    notes.filter(Boolean).forEach(function (n) { append(noteBox, h("p", { text: n })); });
+    if (state.status) append(noteBox, h("p", { class: "pm-status", text: state.status }));
+    append(foot, noteBox);
+    var actions = h("div", { class: "pm-actions" });
+    if (model.link) append(actions, h("button", { type: "button", class: "pm-btn", onclick: function () { openLink(model.link); } }, [icon(ICONS.external), "Open in Pricemind"]));
+    if (model.rows.length && canDownload()) append(actions, h("button", { type: "button", class: "pm-btn", onclick: function () { downloadCSV(model); } }, [icon(ICONS.download), "CSV"]));
+    append(foot, actions);
+    append(root, foot);
+  }
+
+  function back() {
+    if (!state.stack.length) return;
+    var previous = state.stack.pop();
+    state.model = previous.model;
+    state.hidden = previous.hidden;
+    state.view = previous.view;
+    state.status = "";
+    render();
+  }
+
+  // ---------------------------------------------------------------- table
+
+  function renderTable(container, model) {
+    var columns = model.columns.filter(function (c) { return c !== "channel_id" || uniq(model.rows.map(function (r) { return r.channel_id; })).length > 1; });
+    var limit = state.showAllRows || displayMode() === "fullscreen" ? model.rows.length : 25;
+    var ownShops = ownSet(model, firstShopColumn(model));
+    var table = h("table", { class: "pm-table" });
+    var head = h("tr");
+    columns.forEach(function (c) { append(head, h("th", { class: isNumeric(model, c) ? "is-num" : "", text: label(c) })); });
+    append(table, h("thead", null, head));
+    var tbody = h("tbody");
+    model.rows.slice(0, limit).forEach(function (row) {
+      var shopColumn = firstShopColumn(model);
+      var own = row.is_own === true || (shopColumn && ownShops[row[shopColumn]]);
+      var tr = h("tr", { class: own ? "is-own" : "" });
+      columns.forEach(function (c) {
+        var value = row[c];
+        if (value !== null && typeof value === "object") value = JSON.stringify(value);
+        append(tr, h("td", { class: isNumeric(model, c) ? "is-num" : "", title: str(value), text: formatValue(value, c) }));
+      });
+      append(tbody, tr);
+    });
+    append(table, tbody);
+    append(container, h("div", { class: "pm-table-wrap" }, table));
+    if (model.rows.length > limit) {
+      append(container, h("div", { class: "pm-more" }, h("button", { type: "button", class: "pm-link", text: "Show all " + model.rows.length + " rows", onclick: function () { state.showAllRows = true; render(); } })));
+    }
+  }
+  function firstShopColumn(model) {
+    for (var i = 0; i < SHOP_COLUMNS.length; i++) if (model.columns.indexOf(SHOP_COLUMNS[i]) >= 0) return SHOP_COLUMNS[i];
+    return null;
+  }
+  function isNumeric(model, column) {
+    var t = model.columnTypes[column];
+    if (t) return t === "number" || t === "integer";
+    for (var i = 0; i < model.rows.length && i < 20; i++) { var v = model.rows[i][column]; if (v !== null && v !== undefined) return typeof v === "number"; }
+    return false;
+  }
+  function label(column) {
+    var text = str(column).replace(/@/g, " @ ").replace(/:/g, " · ").replace(/_/g, " ");
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
+  // ---------------------------------------------------------------- CSV
+
+  function csv(model) {
+    var columns = model.columns;
+    var escape = function (value) {
+      if (value === null || value === undefined) return "";
+      if (typeof value === "object") value = JSON.stringify(value);
+      var text = String(value);
+      return /[",\n\r;]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+    };
+    return [columns.map(escape).join(",")].concat(model.rows.map(function (r) { return columns.map(function (c) { return escape(r[c]); }).join(","); })).join("\r\n") + "\r\n";
+  }
+  function fileName(model) {
+    return "pricemind-" + (model.dataset || "result").replace(/[^a-z0-9_-]+/gi, "-") + "-" + new Date().toISOString().slice(0, 10) + ".csv";
+  }
+  function canDownload() {
+    return state.mode !== "app" || hostSupports("downloadFile");
+  }
+  function downloadCSV(model) {
+    var text = csv(model);
+    var name = fileName(model);
+    if (state.mode === "app") {
+      setStatus("Preparing the download…");
+      bridge.request("ui/download-file", { contents: [{ type: "resource", resource: { uri: "file:///" + name, mimeType: "text/csv", text: text } }] }, 600000)
+        .then(function (r) { setStatus(r && r.isError ? "The download didn't finish." : ""); })
+        .catch(function () { setStatus("The download couldn't be confirmed."); });
+      return;
+    }
+    var url = URL.createObjectURL(new Blob(["﻿" + text], { type: "text/csv;charset=utf-8" }));
+    var a = h("a", { href: url, download: name });
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 1000);
+  }
+  function setStatus(text) {
+    state.status = text;
+    var node = root.querySelector(".pm-status");
+    if (node) node.textContent = text;
+    else render();
+  }
+
+  // ---------------------------------------------------------------- drill-down
+
+  function canDrill(model) {
+    return state.mode === "app" && !!model.channelId && !state.busy;
+  }
+  function drill(model, productId, shops, title) {
+    if (!canDrill(model) || productId === undefined || productId === null) return;
+    var args = { channel_id: model.channelId, dataset: "price_history", product_ids: [num(productId) || productId], time: { last: "90d" }, bucket: "day" };
+    if (shops && shops.length) args.competitors = shops;
+    state.busy = true;
+    state.stack.push({ model: model, hidden: state.hidden, view: state.view });
+    renderSkeleton();
+    bridge.request("tools/call", { name: "search_query", arguments: args }, 60000).then(function (result) {
+      state.busy = false;
+      if (!result || result.isError) throw new Error(errorText(result) || "The price history could not be loaded.");
+      var next = normalise(result, args);
+      if (title) next.subtitle = title + " · last 90 days";
+      load(next);
+    }).catch(function (error) {
+      state.busy = false;
+      var previous = state.stack.pop();
+      state.model = previous.model; state.hidden = previous.hidden; state.view = previous.view;
+      state.status = error && error.message ? error.message : "The price history could not be loaded.";
+      render();
+    });
+  }
+  function productTitle(model, productId) {
+    for (var i = 0; i < model.rows.length; i++) {
+      var r = model.rows[i];
+      if (str(r.product_id) === str(productId)) return r.title || r.product_title || r.name || "";
+    }
+    return "";
+  }
+
+  // ---------------------------------------------------------------- chart dispatch
+
+  function plotWidth(container) {
+    return Math.max(280, Math.floor(container.getBoundingClientRect().width || root.getBoundingClientRect().width || 640));
+  }
+  function plotHeight(facets) {
+    var full = displayMode() === "fullscreen";
+    var vh = window.innerHeight || 600;
+    var base = full ? clamp(vh - 230, 300, 620) : (window.innerWidth < 520 ? 230 : 290);
+    if (facets > 1) base = Math.max(170, Math.round(base * (full ? 0.6 : 0.68)));
+    return base;
+  }
+
+  function drawChart(container, model) {
+    var kind = model.visual.kind;
+    switch (kind) {
+      case "step_line":
+      case "line": return drawLines(container, model, kind === "step_line");
+      case "timeline": return drawTimeline(container, model);
+      case "bar": return drawBars(container, model);
+      case "grouped_bar": return model.visual.measures && model.visual.measures.length === 2 && !model.visual.series ? drawRanges(container, model) : drawGrouped(container, model, false);
+      case "stacked_bar": return drawGrouped(container, model, true);
+      case "price_ladder": return drawLadders(container, model);
+      case "heatmap": return drawHeatmap(container, model);
+    }
+    return [];
+  }
+
+  // A facet splits rows into one small chart per value (usually product_id).
+  function facets(model) {
+    var column = model.visual.facet;
+    if (!column) return [{ key: null, rows: model.rows }];
+    var keys = uniq(model.rows.map(function (r) { return r[column]; }));
+    return keys.map(function (key) { return { key: key, rows: model.rows.filter(function (r) { return str(r[column]) === str(key); }) }; });
+  }
+  function facetHeader(model, facet, onOpen) {
+    var title = model.visual.facet === "product_id" ? (productTitle(model, facet.key) || "Product " + facet.key) : label(model.visual.facet) + ": " + facet.key;
+    var header = h("div", { class: "pm-facet-title" }, [h("span", { text: title })]);
+    if (onOpen) append(header, h("button", { type: "button", class: "pm-link", text: "Price history →", onclick: onOpen }));
+    return header;
+  }
+  function visibleFacets(list) {
+    var full = displayMode() === "fullscreen" || state.expanded;
+    return full ? list : list.slice(0, 4);
+  }
+  function moreFacets(container, list) {
+    var shown = visibleFacets(list).length;
+    if (list.length > shown) append(container, h("div", { class: "pm-more" }, h("button", { type: "button", class: "pm-link", text: "Show " + (list.length - shown) + " more", onclick: function () { state.expanded = true; render(); } })));
+  }
+
+  // Legend chips toggle series; the own shop leads.
+  function legend(container, values, colorOf, own, muted, extra) {
+    if (values.length < 2 && !muted.length) return;
+    var box = h("div", { class: "pm-legend", role: "group", "aria-label": "Shops" });
+    values.forEach(function (value) {
+      var hidden = !!state.hidden[value];
+      var isMuted = muted.indexOf(value) >= 0;
+      var chip = h("button", {
+        type: "button",
+        class: "pm-chip" + (own[value] ? " is-own" : "") + (hidden ? " is-hidden" : "") + (isMuted ? " is-muted" : ""),
+        "aria-pressed": hidden ? "false" : "true",
+        title: hidden ? "Show " + shopName(value) : "Hide " + shopName(value),
+        style: { "--pm-swatch": colorOf(value) },
+        onclick: function () { state.hidden[value] = !state.hidden[value]; render(); }
+      }, [h("span", { class: "pm-swatch" }), h("span", { class: "pm-chip-label", text: shopName(value) })]);
+      if (own[value]) append(chip, h("span", { class: "pm-tag", text: "You" }));
+      else if (isMuted) append(chip, h("span", { class: "pm-tag is-muted", text: extra && extra[value] || "muted" }));
+      append(box, chip);
+    });
+    append(container, box);
+  }
+  function ordered(values, own) {
+    return values.filter(function (v) { return own[v]; }).concat(values.filter(function (v) { return !own[v]; }));
+  }
+
+  // Tooltip inside the plot box, clamped to it.
+  function tooltip(plot) {
+    var box = h("div", { class: "pm-tooltip", role: "status" });
+    plot.appendChild(box);
+    return {
+      show: function (x, y, content) {
+        box.innerHTML = "";
+        append(box, content);
+        box.classList.add("is-on");
+        var width = plot.clientWidth, bw = box.offsetWidth, bh = box.offsetHeight;
+        var left = x + 14 + bw > width ? x - 14 - bw : x + 14;
+        box.style.left = clamp(left, 0, Math.max(0, width - bw)) + "px";
+        box.style.top = clamp(y - bh / 2, -8, Math.max(0, plot.clientHeight - bh + 8)) + "px";
+      },
+      hide: function () { box.classList.remove("is-on"); }
+    };
+  }
+  function ttRow(color, text, value, own, muted) {
+    return h("div", { class: "pm-tt-row" + (own ? " is-own" : "") + (muted ? " is-muted" : "") }, [
+      h("span", { class: "pm-tt-sw", style: { background: color } }),
+      h("span", { class: "pm-tt-label", text: text }),
+      h("span", { class: "pm-tt-value", text: value })
+    ]);
+  }
+
+  function svgRoot(plot, width, height, labelText) {
+    var svg = s("svg", { class: "pm-svg", width: width, height: height, viewBox: "0 0 " + width + " " + height, role: "img", "aria-label": labelText });
+    plot.appendChild(svg);
+    return svg;
+  }
+  function yAxis(svg, ticks, y, x0, x1, column, compact) {
+    ticks.forEach(function (t) {
+      s("line", { class: "pm-gridline", x1: x0, x2: x1, y1: y(t), y2: y(t) }, svg);
+      s("text", { class: "pm-tick", x: x0 - 8, y: y(t) + 3.5, "text-anchor": "end", text: formatValue(t, column, compact) }, svg);
+    });
+  }
+  function refLine(svg, y, x0, x1, color, text, anchorEnd) {
+    s("line", { class: "pm-refline", x1: x0, x2: x1, y1: y, y2: y, stroke: color }, svg);
+    if (text) s("text", { class: "pm-reflabel", x: anchorEnd ? x1 : x0 + 4, y: y - 5, "text-anchor": anchorEnd ? "end" : "start", fill: color, text: text }, svg);
+  }
+
+  // ---------------------------------------------------------------- lines and step lines
+
+  function drawLines(container, model, stepped) {
+    var v = model.visual;
+    var c = colors();
+    var xCol = v.x, yCol = v.y, sCol = v.series;
+    var timeAxis = model.rows.some(function (r) { return toDate(r[xCol]); });
+    var seriesValues = sCol ? uniq(model.rows.map(function (r) { return r[sCol]; }).filter(function (x) { return x !== undefined && x !== null; })) : ["__single"];
+    var own = sCol ? ownSet(model, sCol) : {};
+    seriesValues = ordered(seriesValues, own);
+    var omit = listOf(v, "omit"), muted = listOf(v, "muted");
+    seriesValues = seriesValues.filter(function (s0) { return omit.indexOf(s0) < 0; });
+    var colorOf = sCol ? seriesColorFn(model, seriesValues, own) : function () { return pick(v.color) || c.own; };
+    var outOfStock = {};
+    if (sCol) model.rows.forEach(function (r) { if (r.in_stock === false && !own[r[sCol]]) outOfStock[r[sCol]] = true; });
+    var list = facets(model);
+    if (stepped && sCol && list.length === 1) historyKpis(container, model, seriesValues, own, xCol, yCol, sCol);
+    if (sCol) legend(container, seriesValues, colorOf, own, muted, null);
+
+    var height = plotHeight(list.length);
+    var notes = [];
+    var categories = timeAxis ? null : uniq(model.rows.map(function (r) { return r[xCol]; }));
+    var yIsIndex = /index/.test(yCol);
+    var fromZero = !stepped && !yIsIndex && !/price/.test(yCol) && model.rows.every(function (r) { var n = num(r[yCol]); return n === null || n >= 0; });
+
+    visibleFacets(list).forEach(function (facet) {
+      var block = h("div", { class: "pm-facet" });
+      if (facet.key !== null) append(block, facetHeader(model, facet, canDrill(model) && v.facet === "product_id" && model.dataset !== "price_history" ? function () { drill(model, facet.key, null, productTitle(model, facet.key)); } : null));
+      var plot = h("div", { class: "pm-plot" });
+      append(block, plot);
+      append(container, block);
+      var width = plotWidth(plot);
+
+      // Points per series.
+      var series = seriesValues.filter(function (sv) { return !state.hidden[sv]; }).map(function (sv) {
+        var rows = facet.rows.filter(function (r) { return !sCol || r[sCol] === sv; });
+        var points = rows.map(function (r) {
+          var x = timeAxis ? (toDate(r[xCol]) || {}).getTime && toDate(r[xCol]).getTime() : categories.indexOf(r[xCol]);
+          return { x: x, y: num(r[yCol]), row: r };
+        }).filter(function (p) { return p.x !== undefined && p.x !== null && !isNaN(p.x); });
+        points.sort(function (a, b) { return a.x - b.x; });
+        return { key: sv, own: !!own[sv], muted: muted.indexOf(sv) >= 0, color: colorOf(sv), points: points };
+      }).filter(function (se) { return se.points.length; });
+      if (!series.length) { append(plot, h("div", { class: "pm-empty", text: "All series are hidden." })); return; }
+
+      var xs = [], ys = [];
+      series.forEach(function (se) { se.points.forEach(function (p) { xs.push(p.x); if (p.y !== null) ys.push(p.y); }); });
+      if (yIsIndex) ys.push(100);
+      var dom = niceDomain(Math.min.apply(null, ys), Math.max.apply(null, ys), Math.max(3, Math.floor(height / 56)), fromZero);
+      var tickWidth = Math.max.apply(null, dom.ticks.map(function (t) { return textWidth(formatValue(t, yCol, true), 11); }));
+      var endLabels = sCol && series.length <= 4 && width > 460;
+      var margin = { top: 14, right: endLabels ? Math.min(130, 18 + Math.max.apply(null, series.map(function (se) { return textWidth(shopName(se.key), 11, 600); }))) : 16, bottom: 26, left: Math.ceil(tickWidth) + 14 };
+      var x0 = margin.left, x1 = width - margin.right, y0 = height - margin.bottom, y1 = margin.top;
+      var xMin = Math.min.apply(null, xs), xMax = Math.max.apply(null, xs);
+      var x = timeAxis ? linear(xMin, xMax === xMin ? xMin + 864e5 : xMax, x0, x1) : linear(-0.5, categories.length - 0.5, x0, x1);
+      var y = linear(dom.lo, dom.hi, y0, y1);
+      var svg = svgRoot(plot, width, height, model.title);
+
+      yAxis(svg, dom.ticks, y, x0, x1, yCol, true);
+      s("line", { class: "pm-axis-line", x1: x0, x2: x1, y1: y0, y2: y0 }, svg);
+      if (timeAxis) {
+        var tt = timeTicks(xMin, xMax, x1 - x0);
+        tt.ticks.forEach(function (t, i) {
+          var anchor = i === 0 && x(t) - x0 < 20 ? "start" : (x1 - x(t) < 20 ? "end" : "middle");
+          s("text", { class: "pm-tick", x: x(t), y: y0 + 17, "text-anchor": anchor, text: formatDate(new Date(t), tt.unit) }, svg);
+        });
+      } else {
+        var every = Math.max(1, Math.ceil(categories.length / Math.max(2, Math.floor((x1 - x0) / 80))));
+        categories.forEach(function (cat, i) { if (i % every === 0) s("text", { class: "pm-tick", x: x(i), y: y0 + 17, "text-anchor": "middle", text: truncate(formatValue(cat, xCol, true), 11, 90) }, svg); });
+      }
+      if (yIsIndex) refLine(svg, y(100), x0, x1, c.reference, "Parity 100", true);
+
+      // Annotations: first tracked, last observation.
+      listOf(v, "annotations").forEach(function (a) {
+        if (a.facet !== undefined && a.facet !== null && facet.key !== null && str(a.facet) !== str(facet.key)) return;
+        var d = toDate(a.x);
+        if (!d || !timeAxis) return;
+        var ax = x(d.getTime());
+        if (ax < x0 - 1 || ax > x1 + 1) return;
+        s("line", { class: "pm-annot-line", x1: ax, x2: ax, y1: y1 - 4, y2: y0 }, svg);
+        var text = a.label === "last observation" ? "Last observation" : a.label;
+        var anchor = ax > x1 - 90 ? "end" : "start";
+        s("text", { class: "pm-annot-label", x: ax + (anchor === "end" ? -4 : 4), y: y1 + 6, "text-anchor": anchor, text: truncate(text, 10.5, 140) }, svg);
+      });
+
+      // Series, competitors first so the own line sits on top.
+      var drawOrder = series.filter(function (se) { return !se.own; }).concat(series.filter(function (se) { return se.own; }));
+      drawOrder.forEach(function (se) {
+        var group = s("g", { class: "pm-series", "data-key": se.key }, svg);
+        var widthPx = se.own ? 3 : (stepped ? 1.5 : 2);
+        var opacity = se.own ? 1 : (se.muted ? 0.35 : (stepped ? 0.75 : 0.95));
+        segments(se, stepped).forEach(function (seg) {
+          var d = path(seg.points, x, y, stepped);
+          if (!d) return;
+          s("path", { d: d, fill: "none", stroke: se.color, "stroke-width": widthPx, "stroke-linejoin": "round", "stroke-linecap": "round", "stroke-dasharray": seg.dashed ? "4 4" : null, opacity: seg.muted ? opacity * 0.4 : opacity }, group);
+        });
+        var last = null;
+        for (var i = se.points.length - 1; i >= 0; i--) if (se.points[i].y !== null && !(se.points[i].row.in_stock === false && !se.own)) { last = se.points[i]; break; }
+        if (last) {
+          s("circle", { class: "pm-dot", cx: x(last.x), cy: y(last.y), r: se.own ? 4 : 3, fill: se.color, opacity: se.muted ? 0.5 : 1 }, group);
+          se.end = { x: x(last.x), y: y(last.y), value: last.y };
+        }
+      });
+      if (endLabels) directLabels(svg, series, x1);
+      hoverLines(plot, svg, series, x, y, x0, x1, y0, y1, timeAxis, categories, yCol, xCol);
+    });
+    moreFacets(container, list);
+
+    if (sCol && model.rows.some(function (r) { return r.in_stock === false; })) notes.push("Breaks in a competitor's line are periods without stock.");
+    if (model.rows.some(function (r) { return r.carried_forward === true || r.observations === 0; })) notes.push("Dashed stretches repeat the last known price; it was not observed then.");
+    var unpriced = omit.filter(Boolean);
+    if (unpriced.length) notes.push("No price in this window: " + unpriced.map(shopName).join(", ") + ".");
+    return notes;
+  }
+
+  // Latest own price, its change over the window and the cheapest competitor now.
+  function historyKpis(container, model, seriesValues, own, xCol, yCol, sCol) {
+    var latest = {}, first = {};
+    model.rows.forEach(function (r) {
+      var key = r[sCol], d = toDate(r[xCol]), n = num(r[yCol]);
+      if (!d || n === null || r.in_stock === false && !own[key]) return;
+      var t = d.getTime();
+      if (!latest[key] || t >= latest[key].t) latest[key] = { t: t, v: n };
+      if (!first[key] || t < first[key].t) first[key] = { t: t, v: n };
+    });
+    var ownKey = seriesValues.filter(function (k) { return own[k] && latest[k]; })[0];
+    var newest = Math.max.apply(null, Object.keys(latest).map(function (k) { return latest[k].t; }));
+    var rivals = seriesValues.filter(function (k) { return !own[k] && latest[k] && latest[k].t === newest; });
+    rivals.sort(function (a, b) { return latest[a].v - latest[b].v; });
+    var box = h("div", { class: "pm-kpis" });
+    if (ownKey) {
+      append(box, kpi("Your price now", formatValue(latest[ownKey].v, yCol), "is-own"));
+      var delta = latest[ownKey].v - first[ownKey].v;
+      if (first[ownKey].t !== latest[ownKey].t) append(box, kpi("Your change in the window", delta === 0 ? "No change" : (delta > 0 ? "+" : "−") + formatValue(Math.abs(delta), yCol) + " (" + (delta > 0 ? "+" : "−") + numberFormat({ maximumFractionDigits: 1 }).format(Math.abs(delta / first[ownKey].v * 100)) + "%)"));
+    }
+    if (rivals.length) {
+      append(box, kpi("Cheapest competitor now", formatValue(latest[rivals[0]].v, yCol) + " · " + shopName(rivals[0])));
+      if (ownKey) {
+        var gap = (latest[ownKey].v - latest[rivals[0]].v) / latest[ownKey].v * 100;
+        append(box, kpi(gap > 0 ? "You are above it by" : gap < 0 ? "You are below it by" : "You match it", gap === 0 ? "0%" : numberFormat({ maximumFractionDigits: 1 }).format(Math.abs(gap)) + "%", gap > 0.05 ? "is-caution" : ""));
+      }
+    }
+    if (box.childNodes.length) append(container, box);
+  }
+
+  // Split a series where it has no price; long carried-forward runs are dashed
+  // and the own shop's out-of-stock stretch is muted.
+  function segments(se, stepped) {
+    var out = [];
+    var current = null;
+    var carried = function (p) { return p.row.carried_forward === true || p.row.observations === 0; };
+    var runs = se.points.map(carried);
+    // Only runs of three or more carried rows are dashed.
+    var dashedAt = runs.map(function () { return false; });
+    for (var i = 0; i < runs.length;) {
+      if (!runs[i]) { i++; continue; }
+      var j = i; while (j < runs.length && runs[j]) j++;
+      if (j - i >= 3) for (var k = i; k < j; k++) dashedAt[k] = true;
+      i = j;
+    }
+    se.points.forEach(function (p, index) {
+      var gap = p.y === null || (p.row.in_stock === false && !se.own);
+      if (gap) { current = null; return; }
+      var flags = { dashed: dashedAt[index], muted: se.own && p.row.in_stock === false };
+      if (!current || current.dashed !== flags.dashed || current.muted !== flags.muted) {
+        var start = current && current.points.length ? [current.points[current.points.length - 1]] : [];
+        current = { dashed: flags.dashed, muted: flags.muted, points: start };
+        out.push(current);
+      }
+      current.points.push(p);
+    });
+    return out;
+  }
+  function path(points, x, y, stepped) {
+    if (!points.length) return "";
+    if (points.length === 1) return "M" + x(points[0].x) + "," + y(points[0].y) + "h0.01";
+    var d = "M" + x(points[0].x).toFixed(1) + "," + y(points[0].y).toFixed(1);
+    for (var i = 1; i < points.length; i++) {
+      var px = x(points[i].x).toFixed(1), py = y(points[i].y).toFixed(1);
+      d += stepped ? "H" + px + "V" + py : "L" + px + "," + py;
+    }
+    return d;
+  }
+  function directLabels(svg, series, x1) {
+    var labels = series.filter(function (se) { return se.end; }).map(function (se) { return { se: se, y: se.end.y }; });
+    labels.sort(function (a, b) { return a.y - b.y; });
+    for (var i = 1; i < labels.length; i++) if (labels[i].y - labels[i - 1].y < 13) labels[i].y = labels[i - 1].y + 13;
+    labels.forEach(function (l) {
+      s("text", { class: "pm-endlabel" + (l.se.own ? " is-own" : ""), x: x1 + 8, y: l.y + 3.5, fill: l.se.color, opacity: l.se.muted ? 0.6 : 1, text: truncate(shopName(l.se.key), 11, 120, l.se.own ? 700 : 500) }, svg);
+    });
+  }
+  function hoverLines(plot, svg, series, x, y, x0, x1, y0, y1, timeAxis, categories, yCol, xCol) {
+    var tip = tooltip(plot);
+    var guide = s("line", { class: "pm-guide", y1: y1, y2: y0, opacity: 0 }, svg);
+    var dots = s("g", {}, svg);
+    var allX = uniq([].concat.apply([], series.map(function (se) { return se.points.map(function (p) { return p.x; }); }))).sort(function (a, b) { return a - b; });
+    var overlay = s("rect", { x: x0, y: y1, width: Math.max(0, x1 - x0), height: Math.max(0, y0 - y1), fill: "transparent" }, svg);
+    function at(px) {
+      var best = allX[0], dist = Infinity;
+      allX.forEach(function (v) { var d = Math.abs(x(v) - px); if (d < dist) { dist = d; best = v; } });
+      return best;
+    }
+    function valueAt(se, xv) {
+      // Step lines hold the last price: the latest point at or before x.
+      var found = null;
+      for (var i = 0; i < se.points.length; i++) { if (se.points[i].x <= xv) found = se.points[i]; else break; }
+      if (found && found.x === xv) return found;
+      return found && found.row && (found.y !== null || found.row.in_stock === false) ? { x: xv, y: found.y, row: found.row, held: true } : null;
+    }
+    function move(event) {
+      var rect = svg.getBoundingClientRect();
+      var px = event.clientX - rect.left;
+      var xv = at(px);
+      var gx = x(xv);
+      guide.setAttribute("x1", gx); guide.setAttribute("x2", gx); guide.setAttribute("opacity", 1);
+      dots.innerHTML = "";
+      var lines = [];
+      series.forEach(function (se) {
+        var p = valueAt(se, xv);
+        if (!p) return;
+        var gap = p.row.in_stock === false && !se.own;
+        if (p.y === null && !gap) return;
+        if (!gap) s("circle", { class: "pm-dot", cx: gx, cy: y(p.y), r: se.own ? 4.5 : 3.5, fill: se.color }, dots);
+        lines.push({ se: se, p: p, gap: gap });
+      });
+      lines.sort(function (a, b) { if (a.se.own !== b.se.own) return a.se.own ? -1 : 1; return (b.p.y || 0) - (a.p.y || 0); });
+      var title = timeAxis ? formatDate(new Date(xv), "auto") : formatValue(categories[xv], xCol);
+      var content = [h("div", { class: "pm-tt-title", text: title })];
+      lines.slice(0, 12).forEach(function (l) {
+        var name = l.se.key === "__single" ? label(yCol) : shopName(l.se.key);
+        content.push(ttRow(l.se.color, name + (l.gap ? " · out of stock" : ""), l.gap ? "–" : formatValue(l.p.y, yCol), l.se.own, l.se.muted || l.gap));
+      });
+      if (lines.length > 12) content.push(h("div", { class: "pm-tt-note", text: "+" + (lines.length - 12) + " more" }));
+      tip.show(gx, Math.min.apply(null, lines.filter(function (l) { return l.p.y !== null; }).map(function (l) { return y(l.p.y); }).concat([y0 - 40])), content);
+    }
+    function leave() { guide.setAttribute("opacity", 0); dots.innerHTML = ""; tip.hide(); }
+    overlay.addEventListener("pointermove", move);
+    overlay.addEventListener("pointerdown", move);
+    overlay.addEventListener("pointerleave", leave);
+  }
+
+  // ---------------------------------------------------------------- timeline (price changes)
+
+  function drawTimeline(container, model) {
+    var v = model.visual, c = colors();
+    var xCol = v.x, yCol = v.y, sCol = v.series;
+    var values = sCol ? uniq(model.rows.map(function (r) { return r[sCol]; })) : ["__single"];
+    var own = sCol ? ownSet(model, sCol) : {};
+    values = ordered(values, own);
+    var colorOf = sCol ? seriesColorFn(model, values, own) : function () { return pick(v.color) || c.own; };
+    if (sCol) legend(container, values, colorOf, own, listOf(v, "muted"), null);
+    var plot = h("div", { class: "pm-plot" });
+    append(container, plot);
+    var width = plotWidth(plot), height = plotHeight(1);
+    var points = model.rows.map(function (r) {
+      var d = toDate(r[xCol]);
+      return { x: d && d.getTime(), y: num(r[yCol]), row: r, key: sCol ? r[sCol] : "__single" };
+    }).filter(function (p) { return p.x && p.y !== null && !state.hidden[p.key]; });
+    if (!points.length) { append(plot, h("div", { class: "pm-empty", text: "All shops are hidden." })); return []; }
+    var ys = points.map(function (p) { return p.y; }).concat([0]);
+    var dom = niceDomain(Math.min.apply(null, ys), Math.max.apply(null, ys), Math.max(3, Math.floor(height / 56)), true);
+    var tickWidth = Math.max.apply(null, dom.ticks.map(function (t) { return textWidth(formatValue(t, yCol, true), 11); }));
+    var x0 = Math.ceil(tickWidth) + 14, x1 = width - 16, y0 = height - 26, y1 = 14;
+    var xs = points.map(function (p) { return p.x; });
+    var xMin = Math.min.apply(null, xs), xMax = Math.max.apply(null, xs);
+    if (xMin === xMax) { xMin -= 864e5; xMax += 864e5; }
+    var pad = (xMax - xMin) * 0.03;
+    var x = linear(xMin - pad, xMax + pad, x0, x1), y = linear(dom.lo, dom.hi, y0, y1);
+    var svg = svgRoot(plot, width, height, model.title);
+    yAxis(svg, dom.ticks, y, x0, x1, yCol, true);
+    s("line", { class: "pm-axis-line", x1: x0, x2: x1, y1: y0, y2: y0 }, svg);
+    refLine(svg, y(0), x0, x1, c.reference, null);
+    s("text", { class: "pm-annot-label", x: x1, y: y1 + 6, "text-anchor": "end", text: "▲ increases" }, svg);
+    s("text", { class: "pm-annot-label", x: x1, y: y0 - 6, "text-anchor": "end", text: "▼ cuts" }, svg);
+    var tt = timeTicks(xMin, xMax, x1 - x0);
+    tt.ticks.forEach(function (t) { s("text", { class: "pm-tick", x: x(t), y: y0 + 17, "text-anchor": "middle", text: formatDate(new Date(t), tt.unit) }, svg); });
+    points.sort(function (a, b) { return (own[a.key] ? 1 : 0) - (own[b.key] ? 1 : 0); });
+    var marks = s("g", {}, svg);
+    points.forEach(function (p) {
+      p.cx = x(p.x); p.cy = y(p.y);
+      if (Math.abs(p.cy - y(0)) > 3) s("line", { x1: p.cx, x2: p.cx, y1: y(0), y2: p.cy, stroke: colorOf(p.key), "stroke-width": 1, opacity: 0.35 }, marks);
+      s("circle", { class: "pm-dot", cx: p.cx, cy: p.cy, r: own[p.key] ? 5 : 4, fill: colorOf(p.key), opacity: own[p.key] ? 1 : 0.9 }, marks);
+    });
+    nearestHover(plot, svg, points, function (p) {
+      var r = p.row;
+      var content = [h("div", { class: "pm-tt-title", text: formatDate(r[xCol], "auto") })];
+      content.push(ttRow(colorOf(p.key), p.key === "__single" ? label(yCol) : shopName(p.key), formatValue(p.y, yCol), own[p.key]));
+      var from = num(r.old_price !== undefined ? r.old_price : r.previous_price), to = num(r.new_price !== undefined ? r.new_price : r.price);
+      if (from !== null && to !== null) content.push(h("div", { class: "pm-tt-note", text: formatMoney(from) + " → " + formatMoney(to) }));
+      if (r.title) content.push(h("div", { class: "pm-tt-note", text: truncate(r.title, 11, 260) }));
+      return content;
+    }, function (p) { return canDrill(model) && p.row.product_id !== undefined ? function () { drill(model, p.row.product_id, null, p.row.title || productTitle(model, p.row.product_id)); } : null; });
+    return model.rows.some(function (r) { return r.product_id !== undefined; }) && canDrill(model) ? ["Click a change to open that product's price history."] : [];
+  }
+  function nearestHover(plot, svg, points, content, click) {
+    var tip = tooltip(plot);
+    var ring = s("circle", { r: 8, fill: "none", stroke: "var(--pm-guide)", "stroke-width": 1, opacity: 0 }, svg);
+    var active = null;
+    function find(event) {
+      var rect = svg.getBoundingClientRect();
+      var px = event.clientX - rect.left, py = event.clientY - rect.top;
+      var best = null, dist = 18 * 18;
+      points.forEach(function (p) { var d = (p.cx - px) * (p.cx - px) + (p.cy - py) * (p.cy - py); if (d < dist) { dist = d; best = p; } });
+      return best;
+    }
+    svg.addEventListener("pointermove", function (event) {
+      active = find(event);
+      if (!active) { ring.setAttribute("opacity", 0); tip.hide(); svg.style.cursor = ""; return; }
+      ring.setAttribute("cx", active.cx); ring.setAttribute("cy", active.cy); ring.setAttribute("opacity", 1);
+      svg.style.cursor = click && click(active) ? "pointer" : "";
+      tip.show(active.cx, active.cy, content(active));
+    });
+    svg.addEventListener("pointerleave", function () { ring.setAttribute("opacity", 0); tip.hide(); });
+    svg.addEventListener("click", function (event) { var p = find(event); var action = p && click && click(p); if (action) action(); });
+  }
+
+  // ---------------------------------------------------------------- bars
+
+  function barPath(x, y, w, hgt, radius, horizontal, negative) {
+    // Rounded at the far end, square at the baseline.
+    var r = Math.max(0, Math.min(radius, (horizontal ? hgt : w) / 2, horizontal ? w : hgt));
+    if (horizontal) {
+      if (!negative) return "M" + x + "," + y + "H" + (x + w - r) + "Q" + (x + w) + "," + y + " " + (x + w) + "," + (y + r) + "V" + (y + hgt - r) + "Q" + (x + w) + "," + (y + hgt) + " " + (x + w - r) + "," + (y + hgt) + "H" + x + "Z";
+      return "M" + (x + w) + "," + y + "H" + (x + r) + "Q" + x + "," + y + " " + x + "," + (y + r) + "V" + (y + hgt - r) + "Q" + x + "," + (y + hgt) + " " + (x + r) + "," + (y + hgt) + "H" + (x + w) + "Z";
+    }
+    if (!negative) return "M" + x + "," + (y + hgt) + "V" + (y + r) + "Q" + x + "," + y + " " + (x + r) + "," + y + "H" + (x + w - r) + "Q" + (x + w) + "," + y + " " + (x + w) + "," + (y + r) + "V" + (y + hgt) + "Z";
+    return "M" + x + "," + y + "V" + (y + hgt - r) + "Q" + x + "," + (y + hgt) + " " + (x + r) + "," + (y + hgt) + "H" + (x + w - r) + "Q" + (x + w) + "," + (y + hgt) + " " + (x + w) + "," + (y + hgt - r) + "V" + y + "Z";
+  }
+  function noteSays(v, text) { return listOf(v, "notes").some(function (n) { return str(n).indexOf(text) >= 0; }); }
+  function categoryLabel(model, row, column) {
+    if (column === "product_id" && (row.title || row.product_title)) return row.title || row.product_title;
+    return formatValue(row[column], column, true);
+  }
+
+  function drawBars(container, model) {
+    var v = model.visual, c = colors();
+    var xCol = v.x, yCol = v.y;
+    var rows = model.rows.filter(function (r) { return num(r[yCol]) !== null; });
+    if (noteSays(v, "order the bars by")) rows = rows.slice().sort(function (a, b) { return num(b[yCol]) - num(a[yCol]); });
+    var own = ownSet(model, xCol);
+    var given = v.series_colors || {};
+    var signed = /(diff|gap|change|vs_own)/.test(yCol);
+    var colorFor = function (row) {
+      var key = row[xCol];
+      if (given[key]) return pick(given[key]);
+      if (own[key]) return c.own;
+      if (signed) {
+        var n = num(row[yCol]);
+        if (/change/.test(yCol)) return n < 0 ? c.price_lowered : c.price_raised;
+        return n < 0 ? c.caution : c.other;
+      }
+      return pick(v.color) || c.own;
+    };
+    var labels = rows.map(function (r) { return categoryLabel(model, r, xCol); });
+    var longest = Math.max.apply(null, labels.map(function (l) { return textWidth(l, 11.5); }).concat([0]));
+    var plot = h("div", { class: "pm-plot" });
+    append(container, plot);
+    var width = plotWidth(plot);
+    var horizontal = longest > 70 || rows.length > 10 || width < 480;
+    var values = rows.map(function (r) { return num(r[yCol]); });
+    var dom = niceDomain(Math.min.apply(null, values.concat([0])), Math.max.apply(null, values.concat([0])), horizontal ? Math.max(3, Math.floor(width / 120)) : 5, true);
+    var svg, tip = tooltip(plot);
+    var clickable = canDrill(model) && rows.some(function (r) { return r.product_id !== undefined; });
+    var showTip = function (row, bx, by) {
+      var content = [h("div", { class: "pm-tt-title", text: truncate(categoryLabel(model, row, xCol), 12, 260, 600) }), ttRow(colorFor(row), label(yCol), formatValue(row[yCol], yCol), own[row[xCol]])];
+      model.columns.forEach(function (col) {
+        if (col === xCol || col === yCol || col === "title" || col === "product_id" || col === "channel_id") return;
+        var n = row[col];
+        if (n === undefined || n === null || typeof n === "object") return;
+        content.push(h("div", { class: "pm-tt-note", text: label(col) + ": " + formatValue(n, col) }));
+      });
+      tip.show(bx, by, content.slice(0, 8));
+    };
+    var bars = [];
+    if (horizontal) {
+      var band = rows.length > 14 ? 20 : 26;
+      var labelWidth = Math.min(Math.max(longest + 4, 60), Math.round(width * 0.38));
+      var valueWidth = 54;
+      var hgt = rows.length * band + 30;
+      var x0 = labelWidth + 12, x1 = width - valueWidth;
+      var x = linear(dom.lo, dom.hi, x0, x1);
+      svg = svgRoot(plot, width, hgt, model.title);
+      dom.ticks.forEach(function (t) {
+        s("line", { class: "pm-gridline", x1: x(t), x2: x(t), y1: 0, y2: rows.length * band }, svg);
+        s("text", { class: "pm-tick", x: x(t), y: rows.length * band + 16, "text-anchor": "middle", text: formatValue(t, yCol, true) }, svg);
+      });
+      rows.forEach(function (row, i) {
+        var n = num(row[yCol]);
+        var top = i * band + 3, bh = band - 6;
+        var start = x(Math.min(0, n)), end = x(Math.max(0, n));
+        var g = s("g", { class: "pm-bar" + (clickable && row.product_id !== undefined ? " is-clickable" : "") }, svg);
+        s("text", { class: "pm-catlabel" + (own[row[xCol]] ? " is-own" : ""), x: labelWidth, y: top + bh / 2 + 4, "text-anchor": "end", text: truncate(labels[i], 11.5, labelWidth, own[row[xCol]] ? 700 : 400) }, g);
+        s("path", { d: barPath(start, top, Math.max(1, end - start), bh, 4, true, n < 0), fill: colorFor(row) }, g);
+        s("text", { class: "pm-barlabel", x: n < 0 ? start - 5 : end + 5, y: top + bh / 2 + 4, "text-anchor": n < 0 ? "end" : "start", text: formatValue(n, yCol, true) }, g);
+        s("rect", { x: 0, y: i * band, width: width, height: band, fill: "transparent" }, g);
+        bars.push({ g: g, row: row, cx: end, cy: top + bh / 2 });
+      });
+      s("line", { class: "pm-axis-line", x1: x(0), x2: x(0), y1: 0, y2: rows.length * band }, svg);
+    } else {
+      var height = plotHeight(1);
+      var tickWidth = Math.max.apply(null, dom.ticks.map(function (t) { return textWidth(formatValue(t, yCol, true), 11); }));
+      var left = Math.ceil(tickWidth) + 14, right = width - 8, bottom = height - 30, top0 = 18;
+      var y = linear(dom.lo, dom.hi, bottom, top0);
+      svg = svgRoot(plot, width, height, model.title);
+      yAxis(svg, dom.ticks, y, left, right, yCol, true);
+      var step = (right - left) / rows.length;
+      var bw = Math.min(56, Math.max(6, step * 0.62));
+      rows.forEach(function (row, i) {
+        var n = num(row[yCol]);
+        var cx = left + step * (i + 0.5);
+        var a = y(Math.max(0, n)), b = y(Math.min(0, n));
+        var g = s("g", { class: "pm-bar" + (clickable && row.product_id !== undefined ? " is-clickable" : "") }, svg);
+        s("path", { d: barPath(cx - bw / 2, a, bw, Math.max(1, b - a), 4, false, n < 0), fill: colorFor(row) }, g);
+        s("text", { class: "pm-barlabel", x: cx, y: n < 0 ? b + 12 : a - 5, "text-anchor": "middle", text: formatValue(n, yCol, true) }, g);
+        s("text", { class: "pm-catlabel" + (own[row[xCol]] ? " is-own" : ""), x: cx, y: bottom + 16, "text-anchor": "middle", text: truncate(labels[i], 11.5, Math.max(30, step - 6), own[row[xCol]] ? 700 : 400) }, g);
+        s("rect", { x: cx - step / 2, y: top0, width: step, height: bottom - top0 + 24, fill: "transparent" }, g);
+        bars.push({ g: g, row: row, cx: cx, cy: a });
+      });
+      s("line", { class: "pm-axis-line", x1: left, x2: right, y1: y(0), y2: y(0) }, svg);
+    }
+    bars.forEach(function (bar) {
+      bar.g.addEventListener("pointerenter", function () { svg.classList.add("has-active"); bar.g.classList.add("is-active"); showTip(bar.row, bar.cx, bar.cy); });
+      bar.g.addEventListener("pointerleave", function () { svg.classList.remove("has-active"); bar.g.classList.remove("is-active"); tip.hide(); });
+      if (clickable && bar.row.product_id !== undefined) bar.g.addEventListener("click", function () { drill(model, bar.row.product_id, null, categoryLabel(model, bar.row, xCol)); });
+    });
+    var notes = [];
+    if (signed && !/change/.test(yCol) && rows.some(function (r) { return num(r[yCol]) < 0; })) notes.push("Amber bars: a competitor is cheaper than you.");
+    if (clickable) notes.push("Click a bar to open that product's price history.");
+    return notes;
+  }
+
+  // Grouped and stacked bars: categories along the axis, one segment per series.
+  function drawGrouped(container, model, stacked) {
+    var v = model.visual, c = colors();
+    var xCol = v.x, yCol = v.y, sCol = v.series;
+    var measures = !sCol && Array.isArray(v.measures) && v.measures.length ? v.measures : null;
+    var seriesValues = measures || uniq(model.rows.map(function (r) { return r[sCol]; }));
+    var ownSeries = sCol ? ownSet(model, sCol) : {};
+    var ownCats = ownSet(model, xCol);
+    seriesValues = ordered(seriesValues, ownSeries);
+    var directionColors = { up: c.price_raised, down: c.price_lowered, unchanged: c.other };
+    var colorOfBase = seriesColorFn(model, seriesValues, ownSeries);
+    var colorOf = function (key) { return sCol === "direction" && directionColors[key] && !(v.series_colors && v.series_colors[key]) ? directionColors[key] : colorOfBase(key); };
+    legend(container, seriesValues, colorOf, ownSeries, listOf(v, "muted"), null);
+    var visible = seriesValues.filter(function (sv) { return !state.hidden[sv]; });
+    var cats = uniq(model.rows.map(function (r) { return r[xCol]; }));
+    var cell = function (cat, key) {
+      if (measures) { var row = model.rows.filter(function (r) { return r[xCol] === cat; })[0]; return row ? num(row[key]) : null; }
+      var match = model.rows.filter(function (r) { return r[xCol] === cat && r[sCol] === key; })[0];
+      return match ? num(match[yCol]) : null;
+    };
+    if (stacked) cats.sort(function (a, b) { return total(b) - total(a); });
+    function total(cat) { return visible.reduce(function (sum, key) { return sum + Math.max(0, cell(cat, key) || 0); }, 0); }
+    var values = [];
+    cats.forEach(function (cat) { if (stacked) values.push(total(cat)); else visible.forEach(function (key) { var n = cell(cat, key); if (n !== null) values.push(n); }); });
+    values.push(0);
+    var plot = h("div", { class: "pm-plot" });
+    append(container, plot);
+    var width = plotWidth(plot);
+    var catLabels = cats.map(function (cat) { return formatValue(cat, xCol, true); });
+    var longest = Math.max.apply(null, catLabels.map(function (l) { return textWidth(l, 11.5); }).concat([0]));
+    var horizontal = longest > 110 || cats.length * Math.max(1, stacked ? 1 : visible.length) > 24 || width < 480;
+    var dom = niceDomain(Math.min.apply(null, values), Math.max.apply(null, values), 5, true);
+    var tip = tooltip(plot);
+    var valueCol = measures ? measures[0] : yCol;
+    var svg;
+    var groups = [];
+    if (horizontal) {
+      var per = stacked ? 1 : Math.max(1, visible.length);
+      var band = Math.max(22, per * 11 + 10);
+      var labelWidth = Math.min(Math.max(longest + 4, 60), Math.round(width * 0.36));
+      var x0 = labelWidth + 12, x1 = width - 50;
+      var x = linear(dom.lo, dom.hi, x0, x1);
+      var hgt = cats.length * band + 28;
+      svg = svgRoot(plot, width, hgt, model.title);
+      dom.ticks.forEach(function (t) {
+        s("line", { class: "pm-gridline", x1: x(t), x2: x(t), y1: 0, y2: cats.length * band }, svg);
+        s("text", { class: "pm-tick", x: x(t), y: cats.length * band + 16, "text-anchor": "middle", text: formatValue(t, valueCol, true) }, svg);
+      });
+      cats.forEach(function (cat, i) {
+        var g = s("g", { class: "pm-bar" }, svg);
+        var top = i * band + 5, inner = band - 10;
+        s("text", { class: "pm-catlabel" + (ownCats[cat] ? " is-own" : ""), x: labelWidth, y: top + inner / 2 + 4, "text-anchor": "end", text: truncate(catLabels[i], 11.5, labelWidth) }, g);
+        if (stacked) {
+          var acc = 0;
+          visible.forEach(function (key, k) {
+            var n = cell(cat, key); if (!n || n <= 0) return;
+            var a = x(acc), b = x(acc + n);
+            var isLast = visible.slice(k + 1).every(function (rest) { return !(cell(cat, rest) > 0); });
+            s("path", { d: isLast ? barPath(a, top, Math.max(1, b - a - 1), inner, 4, true, false) : "M" + a + "," + top + "h" + Math.max(1, b - a - 2) + "v" + inner + "h" + -Math.max(1, b - a - 2) + "Z", fill: colorOf(key) }, g);
+            acc += n;
+          });
+          s("text", { class: "pm-barlabel", x: x(acc) + 5, y: top + inner / 2 + 4, text: formatValue(acc, valueCol, true) }, g);
+        } else {
+          var bh = Math.max(4, (inner - (visible.length - 1) * 2) / Math.max(1, visible.length));
+          visible.forEach(function (key, k) {
+            var n = cell(cat, key); if (n === null) return;
+            var a = x(Math.min(0, n)), b = x(Math.max(0, n));
+            s("path", { d: barPath(a, top + k * (bh + 2), Math.max(1, b - a), bh, 3, true, n < 0), fill: colorOf(key) }, g);
+          });
+        }
+        s("rect", { x: 0, y: i * band, width: width, height: band, fill: "transparent" }, g);
+        groups.push({ g: g, cat: cat, cx: x0 + 40, cy: top + inner / 2 });
+      });
+      s("line", { class: "pm-axis-line", x1: x(0), x2: x(0), y1: 0, y2: cats.length * band }, svg);
+    } else {
+      var height = plotHeight(1);
+      var tickWidth = Math.max.apply(null, dom.ticks.map(function (t) { return textWidth(formatValue(t, valueCol, true), 11); }));
+      var left = Math.ceil(tickWidth) + 14, right = width - 8, bottom = height - 30, top0 = 16;
+      var y = linear(dom.lo, dom.hi, bottom, top0);
+      svg = svgRoot(plot, width, height, model.title);
+      yAxis(svg, dom.ticks, y, left, right, valueCol, true);
+      var step = (right - left) / cats.length;
+      var groupWidth = Math.min(stacked ? 56 : 28 * visible.length + 10, step * 0.74);
+      cats.forEach(function (cat, i) {
+        var g = s("g", { class: "pm-bar" }, svg);
+        var cx = left + step * (i + 0.5);
+        if (stacked) {
+          var acc = 0;
+          visible.forEach(function (key, k) {
+            var n = cell(cat, key); if (!n || n <= 0) return;
+            var a = y(acc + n), b = y(acc);
+            var isLast = visible.slice(k + 1).every(function (rest) { return !(cell(cat, rest) > 0); });
+            s("path", { d: isLast ? barPath(cx - groupWidth / 2, a, groupWidth, Math.max(1, b - a - 1), 4, false, false) : "M" + (cx - groupWidth / 2) + "," + (a + 1) + "h" + groupWidth + "V" + (b - 1) + "h" + -groupWidth + "Z", fill: colorOf(key) }, g);
+            acc += n;
+          });
+          s("text", { class: "pm-barlabel", x: cx, y: y(acc) - 5, "text-anchor": "middle", text: formatValue(acc, valueCol, true) }, g);
+        } else {
+          var bw = Math.max(3, (groupWidth - (visible.length - 1) * 2) / Math.max(1, visible.length));
+          visible.forEach(function (key, k) {
+            var n = cell(cat, key); if (n === null) return;
+            var a = y(Math.max(0, n)), b = y(Math.min(0, n));
+            s("path", { d: barPath(cx - groupWidth / 2 + k * (bw + 2), a, bw, Math.max(1, b - a), 3, false, n < 0), fill: colorOf(key) }, g);
+          });
+        }
+        s("text", { class: "pm-catlabel" + (ownCats[cat] ? " is-own" : ""), x: cx, y: bottom + 16, "text-anchor": "middle", text: truncate(catLabels[i], 11.5, Math.max(30, step - 6)) }, g);
+        s("rect", { x: cx - step / 2, y: top0, width: step, height: bottom - top0 + 24, fill: "transparent" }, g);
+        groups.push({ g: g, cat: cat, cx: cx, cy: top0 + 20 });
+      });
+      s("line", { class: "pm-axis-line", x1: left, x2: right, y1: y(0), y2: y(0) }, svg);
+    }
+    groups.forEach(function (gr) {
+      gr.g.addEventListener("pointerenter", function () {
+        svg.classList.add("has-active"); gr.g.classList.add("is-active");
+        var content = [h("div", { class: "pm-tt-title", text: formatValue(gr.cat, xCol) })];
+        var sum = 0;
+        visible.forEach(function (key) { var n = cell(gr.cat, key); if (n === null) return; sum += n; content.push(ttRow(colorOf(key), measures ? label(key) : shopName(formatValue(key, sCol)), formatValue(n, valueCol), ownSeries[key])); });
+        if (stacked) content.push(h("div", { class: "pm-tt-note", text: "Total " + formatValue(sum, valueCol) }));
+        tip.show(gr.cx, gr.cy, content);
+      });
+      gr.g.addEventListener("pointerleave", function () { svg.classList.remove("has-active"); gr.g.classList.remove("is-active"); tip.hide(); });
+    });
+    return [];
+  }
+
+  // A group's range per retailer: one floating bar from min to max, own price marked.
+  function drawRanges(container, model) {
+    var v = model.visual, c = colors();
+    var xCol = v.x, lo = v.measures[0], hi = v.measures[1], ref = v.reference;
+    var own = ownSet(model, xCol);
+    var colorOf = seriesColorFn(model, uniq(model.rows.map(function (r) { return r[xCol]; })), own);
+    var rows = model.rows.filter(function (r) { return num(r[lo]) !== null || num(r[hi]) !== null; });
+    var values = [];
+    rows.forEach(function (r) { [lo, hi, ref].forEach(function (k) { var n = num(r[k]); if (k && n !== null) values.push(n); }); });
+    var plot = h("div", { class: "pm-plot" });
+    append(container, plot);
+    var width = plotWidth(plot);
+    var labels = rows.map(function (r) { return shopName(r[xCol]); });
+    var labelWidth = Math.min(Math.max.apply(null, labels.map(function (l) { return textWidth(l, 12); }).concat([60])) + 6, width * 0.34);
+    var band = 30, x0 = labelWidth + 14, x1 = width - 70;
+    var dom = niceDomain(Math.min.apply(null, values), Math.max.apply(null, values), Math.max(3, Math.floor((x1 - x0) / 110)), false);
+    var x = linear(dom.lo, dom.hi, x0, x1);
+    var hgt = rows.length * band + 30;
+    var svg = svgRoot(plot, width, hgt, model.title);
+    var tip = tooltip(plot);
+    dom.ticks.forEach(function (t) {
+      s("line", { class: "pm-gridline", x1: x(t), x2: x(t), y1: 0, y2: rows.length * band }, svg);
+      s("text", { class: "pm-tick", x: x(t), y: rows.length * band + 16, "text-anchor": "middle", text: formatValue(t, lo, true) }, svg);
+    });
+    rows.forEach(function (r, i) {
+      var g = s("g", { class: "pm-bar" }, svg);
+      var cy = i * band + band / 2;
+      var a = num(r[lo]), b = num(r[hi]);
+      if (a === null) a = b; if (b === null) b = a;
+      var color = colorOf(r[xCol]);
+      s("text", { class: "pm-catlabel" + (own[r[xCol]] ? " is-own" : ""), x: labelWidth, y: cy + 4, "text-anchor": "end", text: truncate(labels[i], 12, labelWidth) }, g);
+      s("rect", { x: x(a), y: cy - 6, width: Math.max(3, x(b) - x(a)), height: 12, rx: 4, fill: color, opacity: 0.85 }, g);
+      var refValue = ref ? num(r[ref]) : null;
+      if (refValue !== null) {
+        s("line", { x1: x(refValue), x2: x(refValue), y1: cy - 10, y2: cy + 10, stroke: c.own, "stroke-width": 3, "stroke-linecap": "round" }, g);
+      }
+      s("text", { class: "pm-barlabel", x: x(b) + 6, y: cy + 4, text: a === b ? formatValue(a, lo, true) : formatValue(a, lo, true) + " – " + formatValue(b, hi, true) }, g);
+      s("rect", { x: 0, y: i * band, width: width, height: band, fill: "transparent" }, g);
+      g.addEventListener("pointerenter", function () {
+        var content = [h("div", { class: "pm-tt-title", text: shopName(r[xCol]) }), ttRow(color, label(lo), formatValue(r[lo], lo)), ttRow(color, label(hi), formatValue(r[hi], hi))];
+        if (refValue !== null) content.push(ttRow(c.own, "Your price", formatValue(refValue, ref), true));
+        if (r.state) content.push(h("div", { class: "pm-tt-note", text: label(r.state) }));
+        tip.show(x(b), cy, content);
+      });
+      g.addEventListener("pointerleave", function () { tip.hide(); });
+    });
+    return ref ? ["Bars span the group's lowest to highest price at each retailer; the indigo tick is your price."] : [];
+  }
+
+  // ---------------------------------------------------------------- price ladder
+
+  function drawLadders(container, model) {
+    var v = model.visual, c = colors();
+    var xCol = v.x || "price", lCol = v.label || "competitor", ref = v.reference;
+    var shops = uniq(model.rows.map(function (r) { return r[v.series || lCol]; }));
+    var own = ownSet(model, v.series || lCol);
+    var colorOf = seriesColorFn(model, shops, own);
+    var omit = listOf(v, "omit"), muted = listOf(v, "muted");
+    var notes = [];
+    var list = facets(model);
+    var drillable = canDrill(model);
+    visibleFacets(list).forEach(function (facet) {
+      var block = h("div", { class: "pm-facet" });
+      var productId = facet.key !== null ? facet.key : (facet.rows[0] && facet.rows[0].product_id);
+      var title = productTitle(model, productId);
+      if (facet.key !== null) append(block, facetHeader(model, facet, drillable ? function () { drill(model, productId, null, title); } : null));
+      var rows = facet.rows.filter(function (r) { var p = num(r[xCol]); return p !== null && p > 0 && omit.indexOf(r[lCol]) < 0 && omit.indexOf(r[v.series || lCol]) < 0; });
+      var gone = uniq(facet.rows.filter(function (r) { var p = num(r[xCol]); return p === null || p <= 0; }).map(function (r) { return shopName(r[lCol]); }));
+      rows.sort(function (a, b) { return num(a[xCol]) - num(b[xCol]); });
+      var refValue = null;
+      if (ref) facet.rows.some(function (r) { var n = num(r[ref]); if (n !== null && n > 0) { refValue = n; return true; } return false; });
+      // Summary: cheapest shop and the gap to my price.
+      var visibleRows = rows.filter(function (r) { return !state.hidden[r[v.series || lCol]]; });
+      var buyable = visibleRows.filter(function (r) { return muted.indexOf(r[lCol]) < 0 && muted.indexOf(r[v.series || lCol]) < 0 && !own[r[v.series || lCol]] && r.stock !== "out_of_stock"; });
+      var kpis = h("div", { class: "pm-kpis" });
+      if (refValue !== null) append(kpis, kpi("Your price", formatMoney(refValue), "is-own"));
+      if (buyable.length) {
+        var cheapest = buyable[0];
+        var cp = num(cheapest[xCol]);
+        append(kpis, kpi("Cheapest competitor", formatMoney(cp) + " · " + shopName(cheapest[lCol])));
+        if (refValue !== null) {
+          var gap = (refValue - cp) / refValue * 100;
+          append(kpis, kpi(gap > 0 ? "You are above the cheapest by" : "You are below the cheapest by", numberFormat({ maximumFractionDigits: 1 }).format(Math.abs(gap)) + "%", gap > 0.05 ? "is-caution" : ""));
+        }
+        append(kpis, kpi("Shops with stock", String(buyable.length)));
+      }
+      if (kpis.childNodes.length && (facet.key === null || list.length <= 2)) append(block, kpis);
+      var plot = h("div", { class: "pm-plot" });
+      append(block, plot);
+      append(container, block);
+      if (!visibleRows.length) { append(plot, h("div", { class: "pm-empty", text: "No priced offers to place." })); return; }
+      var width = plotWidth(plot);
+      var labelWidth = Math.min(Math.max.apply(null, visibleRows.map(function (r) { return textWidth(shopName(r[lCol]), 12, own[r[v.series || lCol]] ? 700 : 400); }).concat([60])) + 34, width * 0.38);
+      var band = 28, top = refValue !== null ? 22 : 8;
+      var x0 = labelWidth + 16, x1 = width - 92;
+      var values = visibleRows.map(function (r) { return num(r[xCol]); });
+      if (refValue !== null) values.push(refValue);
+      var dom = niceDomain(Math.min.apply(null, values), Math.max.apply(null, values), Math.max(3, Math.floor((x1 - x0) / 110)), false);
+      var x = linear(dom.lo, dom.hi, x0, x1);
+      var hgt = top + visibleRows.length * band + 26;
+      var svg = svgRoot(plot, width, hgt, model.title + (title ? ": " + title : ""));
+      var tip = tooltip(plot);
+      dom.ticks.forEach(function (t) {
+        s("line", { class: "pm-gridline", x1: x(t), x2: x(t), y1: top - 4, y2: top + visibleRows.length * band }, svg);
+        s("text", { class: "pm-tick", x: x(t), y: top + visibleRows.length * band + 16, "text-anchor": "middle", text: formatValue(t, xCol, true) }, svg);
+      });
+      if (refValue !== null) {
+        var rx = x(refValue);
+        s("line", { class: "pm-refline", x1: rx, x2: rx, y1: top - 6, y2: top + visibleRows.length * band, stroke: c.own }, svg);
+        var label0 = "Your price " + formatMoney(refValue, true);
+        var anchor = rx > x1 - textWidth(label0, 10.5, 600) / 2 ? "end" : (rx < x0 + 60 ? "start" : "middle");
+        s("text", { class: "pm-reflabel", x: rx, y: top - 10, "text-anchor": anchor, fill: c.own, text: label0 }, svg);
+      }
+      visibleRows.forEach(function (r, i) {
+        var key = r[v.series || lCol];
+        var price = num(r[xCol]);
+        var cy = top + i * band + band / 2;
+        var isOwn = !!own[key];
+        var isMuted = muted.indexOf(r[lCol]) >= 0 || muted.indexOf(key) >= 0 || r.stock === "out_of_stock";
+        var color = colorOf(key);
+        var g = s("g", { class: "pm-ladder-row" + (drillable ? " is-clickable" : ""), opacity: isMuted ? 0.45 : 1 }, svg);
+        s("rect", { x: 0, y: cy - band / 2, width: width, height: band, fill: "transparent" }, g);
+        s("circle", { cx: 10, cy: cy, r: 4, fill: color }, g);
+        s("text", { class: "pm-ladder-shop" + (isOwn ? " is-own" : ""), x: 20, y: cy + 4, text: truncate(r[lCol] && lCol !== "competitor" ? r[lCol] : shopName(r[lCol]), 12, labelWidth - 24, isOwn ? 700 : 400) }, g);
+        s("line", { class: "pm-ladder-track", x1: x0, x2: x(price), y1: cy, y2: cy }, g);
+        s("circle", { class: "pm-dot", cx: x(price), cy: cy, r: isOwn ? 7 : 6, fill: color }, g);
+        var cheaper = refValue !== null && !isOwn && price < refValue - 0.005;
+        s("text", { class: "pm-ladder-price" + (cheaper ? " is-caution" : ""), x: x(price) + 11, y: cy + 4, text: formatMoney(price) }, g);
+        var flag = isMuted ? (r.stock === "out_of_stock" ? "out of stock" : r.is_stale ? "old price" : "muted") : "";
+        if (flag) s("text", { class: "pm-ladder-flag", x: x(price) + 13 + textWidth(formatMoney(price), 11.5, 600), y: cy + 4, text: "· " + flag }, g);
+        g.addEventListener("pointerenter", function () {
+          var content = [h("div", { class: "pm-tt-title", text: shopName(r[lCol]) + (isOwn ? " · you" : "") }), ttRow(color, "Price", formatMoney(price), isOwn)];
+          if (refValue !== null && !isOwn) content.push(ttRow(c.own, "vs your price", (price >= refValue ? "+" : "−") + numberFormat({ maximumFractionDigits: 1 }).format(Math.abs((price - refValue) / refValue * 100)) + "%"));
+          if (r.stock) content.push(h("div", { class: "pm-tt-note", text: "Stock: " + label(r.stock) }));
+          if (r.price_updated_at) content.push(h("div", { class: "pm-tt-note", text: "Seen " + formatDate(r.price_updated_at, "auto") + (r.is_stale ? " · old price" : "") }));
+          if (r.pack_quantity) content.push(h("div", { class: "pm-tt-note", text: "Pack of " + r.pack_quantity }));
+          if (drillable) content.push(h("div", { class: "pm-tt-note", text: "Click for price history" }));
+          tip.show(x(price), cy, content);
+        });
+        g.addEventListener("pointerleave", function () { tip.hide(); });
+        if (drillable) g.addEventListener("click", function () { drill(model, productId, isOwn ? null : [r[lCol]], title); });
+      });
+      if (gone.length) append(block, h("div", { class: "pm-notes", style: { "margin-top": "4px" }, text: "No price observed: " + gone.join(", ") }));
+    });
+    moreFacets(container, list);
+    if (muted.length) notes.push("Faded shops are out of stock or have an old price.");
+    if (ref) notes.push("Amber prices are below yours.");
+    return notes;
+  }
+  function kpi(labelText, value, cls) {
+    return h("div", { class: "pm-kpi" }, [h("div", { class: "pm-kpi-label", text: labelText }), h("div", { class: "pm-kpi-value" + (cls ? " " + cls : ""), text: value })]);
+  }
+
+  // ---------------------------------------------------------------- heatmap
+
+  function mix(a, b, t) {
+    var pa = rgb(a), pb = rgb(b);
+    return "rgb(" + [0, 1, 2].map(function (i) { return Math.round(pa[i] + (pb[i] - pa[i]) * t); }).join(",") + ")";
+  }
+  function rgb(color) {
+    color = str(color).trim();
+    if (color.charAt(0) === "#") {
+      var hex = color.slice(1);
+      if (hex.length === 3) hex = hex.split("").map(function (ch) { return ch + ch; }).join("");
+      return [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16)];
+    }
+    var m = color.match(/\d+(\.\d+)?/g);
+    return m ? [+m[0], +m[1], +m[2]] : [128, 128, 128];
+  }
+  // Dark or light text, whichever reads better on the cell colour.
+  function inkOn(color) {
+    var c = rgb(color).map(function (v) { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+    var luminance = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    return luminance > 0.36 ? "#111827" : "#ffffff";
+  }
+  function drawHeatmap(container, model) {
+    var v = model.visual, c = colors();
+    // Native heatmap: x = columns, y = rows, value = cells. A grouped_bar-shaped
+    // hint switched to heatmap: x = rows, series = columns, y = cells.
+    var native = !!v.value;
+    var colCol = native ? v.x : (v.series || v.x);
+    var rowCol = native ? v.y : v.x;
+    var valCol = native ? v.value : v.y;
+    if (!native && !v.series && Array.isArray(v.measures)) { colCol = null; }
+    var rowsKeys = uniq(model.rows.map(function (r) { return r[rowCol]; }));
+    var colKeys = uniq(model.rows.map(function (r) { return r[colCol]; }));
+    var own = ownSet(model, colCol);
+    colKeys = ordered(colKeys, own);
+    var values = model.rows.map(function (r) { return num(r[valCol]); }).filter(function (n) { return n !== null; });
+    var scale = v.scale || {};
+    var signedValue = columnKind(valCol) === "signed_pct";
+    var midpoint = scale.midpoint !== undefined && scale.midpoint !== null ? scale.midpoint : (/index/.test(valCol) ? 100 : (signedValue || (Math.min.apply(null, values) < 0 && Math.max.apply(null, values) > 0) ? 0 : null));
+    if (!v.scale && midpoint === 0 && /(share|pct|percent)/.test(valCol) && !/(diff|gap|change|vs_own)/.test(valCol)) midpoint = null;
+    var low = pick(scale.low) || (midpoint === 100 ? c.own : (midpoint === 0 ? (/change/.test(valCol) ? c.price_lowered : c.caution) : c.grid));
+    var high = pick(scale.high) || (midpoint === 100 ? c.caution : (midpoint === 0 ? (/change/.test(valCol) ? c.price_raised : c.own) : c.own));
+    var neutral = theme() === "dark" ? "#1b2433" : "#f3f4f6";
+    var lo = Math.min.apply(null, values), hi = Math.max.apply(null, values);
+    var spread = midpoint !== null ? Math.max(Math.abs(lo - midpoint), Math.abs(hi - midpoint)) || 1 : (hi - lo) || 1;
+    var fill = function (n) {
+      if (n === null) return "transparent";
+      if (midpoint === null) return mix(neutral, high, 0.08 + 0.92 * (n - lo) / spread);
+      var t = Math.min(1, Math.abs(n - midpoint) / spread);
+      return mix(neutral, n < midpoint ? low : high, 0.1 + 0.9 * Math.pow(t, 0.85));
+    };
+    var plot = h("div", { class: "pm-plot" });
+    append(container, plot);
+    var width = plotWidth(plot);
+    var rowLabels = rowsKeys.map(function (k) { return formatValue(k, rowCol, true); });
+    var labelWidth = Math.min(Math.max.apply(null, rowLabels.map(function (l) { return textWidth(l, 11.5); }).concat([50])) + 8, width * 0.3);
+    var colLabels = colKeys.map(function (k) { return shopName(formatValue(k, colCol, true)); });
+    var cellW = Math.max(36, Math.min(110, (width - labelWidth - 12) / Math.max(1, colKeys.length)));
+    var rotate = colLabels.some(function (l) { return textWidth(l, 11) > cellW - 6; });
+    var headH = rotate ? Math.min(110, Math.max.apply(null, colLabels.map(function (l) { return textWidth(l, 11); })) * 0.72 + 18) : 22;
+    var cellH = 30;
+    var gridW = cellW * colKeys.length;
+    var hgt = headH + rowsKeys.length * cellH + 46;
+    var svg = svgRoot(plot, Math.max(width, labelWidth + 12 + gridW), hgt, model.title);
+    var tip = tooltip(plot);
+    var x0 = labelWidth + 12;
+    colKeys.forEach(function (k, j) {
+      var cx = x0 + j * cellW + cellW / 2;
+      var text = truncate(colLabels[j], 11, rotate ? 140 : cellW - 6, own[k] ? 700 : 400);
+      if (rotate) s("text", { class: "pm-catlabel" + (own[k] ? " is-own" : ""), x: cx, y: headH - 8, transform: "rotate(-35 " + cx + " " + (headH - 8) + ")", text: text }, svg);
+      else s("text", { class: "pm-catlabel" + (own[k] ? " is-own" : ""), x: cx, y: headH - 8, "text-anchor": "middle", text: text }, svg);
+    });
+    rowsKeys.forEach(function (rk, i) {
+      var cy = headH + i * cellH;
+      s("text", { class: "pm-catlabel", x: labelWidth, y: cy + cellH / 2 + 4, "text-anchor": "end", text: truncate(rowLabels[i], 11.5, labelWidth) }, svg);
+      colKeys.forEach(function (ck, j) {
+        var row = model.rows.filter(function (r) { return r[rowCol] === rk && r[colCol] === ck; })[0];
+        var n = row ? num(row[valCol]) : null;
+        var cx = x0 + j * cellW;
+        var g = s("g", {}, svg);
+        s("rect", { class: "pm-cell", x: cx, y: cy, width: cellW, height: cellH, rx: 5, fill: n === null ? "transparent" : fill(n), stroke: n === null ? "var(--pm-line)" : null, "stroke-dasharray": n === null ? "3 3" : null }, g);
+        if (n !== null) s("text", { class: "pm-cell-text", x: cx + cellW / 2, y: cy + cellH / 2 + 4, "text-anchor": "middle", fill: inkOn(fill(n)), text: formatValue(n, valCol, true) }, g);
+        g.addEventListener("pointerenter", function () {
+          var content = [h("div", { class: "pm-tt-title", text: formatValue(rk, rowCol) + " · " + shopName(formatValue(ck, colCol)) }), ttRow(n === null ? "transparent" : fill(n), label(valCol), n === null ? "no data" : formatValue(n, valCol))];
+          if (row) model.columns.forEach(function (col) { if ([rowCol, colCol, valCol, "channel_id"].indexOf(col) >= 0 || row[col] === undefined || row[col] === null || typeof row[col] === "object") return; content.push(h("div", { class: "pm-tt-note", text: label(col) + ": " + formatValue(row[col], col) })); });
+          tip.show(cx + cellW / 2, cy + cellH / 2, content.slice(0, 7));
+        });
+        g.addEventListener("pointerleave", function () { tip.hide(); });
+      });
+    });
+    // Scale legend: five discrete swatches.
+    var ly = headH + rowsKeys.length * cellH + 18;
+    var steps = midpoint !== null ? [midpoint - spread, midpoint - spread / 2, midpoint, midpoint + spread / 2, midpoint + spread] : [lo, lo + spread / 4, lo + spread / 2, lo + spread * 3 / 4, hi];
+    s("text", { class: "pm-tick", x: x0, y: ly + 11, text: humanTitle(valCol) }, svg);
+    var lx = x0 + textWidth(humanTitle(valCol), 11) + 12;
+    steps.forEach(function (st, i) {
+      s("rect", { x: lx + i * 46, y: ly, width: 44, height: 14, rx: 3, fill: fill(st) }, svg);
+      s("text", { class: "pm-tick", x: lx + i * 46 + 22, y: ly + 28, "text-anchor": "middle", text: formatValue(st, valCol, true) }, svg);
+    });
+    var notes = [];
+    if (midpoint === 0 && /(diff|gap|vs_own)/.test(valCol)) notes.push("Amber cells: the competitor is cheaper than you; indigo: you are cheaper.");
+    if (midpoint === 100) notes.push("100 is price parity; above it you are more expensive.");
+    if (model.rows.length < rowsKeys.length * colKeys.length) notes.push("Dashed cells have no data.");
+    return notes;
+  }
+
+  // ---------------------------------------------------------------- start
+
+  var resizeTimer = null;
+  window.addEventListener("resize", function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () { if (state.model) render(); }, 120);
+  });
+  if (window.matchMedia) {
+    var media = window.matchMedia("(prefers-color-scheme: dark)");
+    var onScheme = function () { if (!(state.host.context && state.host.context.theme)) render(); };
+    if (media.addEventListener) media.addEventListener("change", onScheme); else if (media.addListener) media.addListener(onScheme);
+  }
+
+  // A page opened as a file can pin the theme with #theme=dark or #theme=light.
+  var pinned = /theme=(dark|light)/.exec(location.hash || "");
+  if (pinned && window.parent === window) state.forcedTheme = pinned[1];
+
+  var embedded = null;
+  try { embedded = JSON.parse(document.getElementById("pricemind-chart-data").textContent || "null"); } catch (error) { embedded = { error: String(error) }; }
+  applyTheme();
+  if (embedded && typeof embedded === "object" && !embedded.error) {
+    state.mode = "template";
+    document.documentElement.classList.add("is-page");
+    load(normalise(embedded, embedded.arguments || {}));
+  } else if (embedded && embedded.error) {
+    document.documentElement.classList.add("is-page");
+    showMessage("The chart data is not valid JSON: " + embedded.error);
+  } else if (window.parent && window.parent !== window) {
+    state.mode = "app";
+    connect();
+  } else {
+    document.documentElement.classList.add("is-page");
+    render();
+  }
+
+  // Exposed for tests and for fixture pages.
+  window.PricemindChart = { version: VERSION, render: function (data) { state.mode = state.mode === "app" ? "app" : "template"; load(normalise(data, (data && data.arguments) || {})); }, csv: function () { return state.model ? csv(state.model) : ""; } };
+})();
+</script>
+</body>
+</html>

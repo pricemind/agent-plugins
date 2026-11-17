@@ -5,13 +5,15 @@
     "url": "https://pricemind.ai"
   },
   "metadata": {
-    "description": "The official Pricemind plugin for Claude."
+    "description": "The official Pricemind plugin for Claude.",
+    "version": "1.1.0"
   },
   "plugins": [
     {
       "name": "pricemind",
       "source": "./",
-      "description": "Competitive price intelligence, product matching, competitor alternatives and repricing strategies from your Pricemind account."
+      "description": "Competitive price intelligence, product matching, competitor alternatives and repricing strategies from your Pricemind account.",
+      "version": "1.1.0"
     }
   ]
 }
